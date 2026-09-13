@@ -1299,8 +1299,22 @@ namespace WinQuad
             g.PixelOffsetMode = PixelOffsetMode.HighQuality;
             try
             {
-                g.DrawIcon(icon, new Rectangle((int)Math.Round(dx), (int)Math.Round(dy),
-                                               (int)Math.Round(w), (int)Math.Round(h)));
+                // 用 ToBitmap + DrawImage，而不是 g.DrawIcon。
+                //
+                // 两个原因：
+                //  1) DrawIcon 会把**整个**图标缩放到目标矩形，传进去的源范围没人理 ——
+                //     所以上面辛苦算出来的 content 紧边界其实一直是白算的，
+                //     图标四周自带的透明边距照旧占着地方，内容看着比实际小一圈。
+                //  2) DrawIcon 对带 Alpha 的图标处理不可靠，颜色可能失真。
+                //     DrawImage 显式给源矩形，缩放和透明都走 GDI+ 的正常路径。
+                using (var bmp = icon.ToBitmap())
+                {
+                    g.DrawImage(bmp,
+                        new Rectangle((int)Math.Round(dx), (int)Math.Round(dy),
+                                      (int)Math.Round(w), (int)Math.Round(h)),
+                        content,
+                        GraphicsUnit.Pixel);
+                }
             }
             finally { g.InterpolationMode = pm; g.PixelOffsetMode = pp; }
         }
