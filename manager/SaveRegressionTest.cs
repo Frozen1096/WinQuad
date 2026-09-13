@@ -83,6 +83,10 @@ namespace WinQuad.Manager
             c.Style.FontSizePt = 6.5f;
             c.Behaviour.GridStepX = 84;
             c.Behaviour.CollisionH = 58;
+            // 投影三项：也一并测「键不存在时能不能补进去」
+            c.Style.ShadowOffset = 5;
+            c.Style.ShadowAlpha = 177;
+            c.Style.ShadowColor = new[] { 1, 2, 3 };
             Cfg.SaveConfig(c);
 
             string after = File.ReadAllText(path);
@@ -97,12 +101,21 @@ namespace WinQuad.Manager
             sb.AppendLine("回读 gridStepX     = " + c2.Behaviour.GridStepX + "  (期望 84)");
             sb.AppendLine("回读 collisionH    = " + c2.Behaviour.CollisionH + "  (期望 58)");
             sb.AppendLine("回读 groups 数     = " + c2.Groups.Count);
+            sb.AppendLine("回读 shadowOffset  = " + c2.Style.ShadowOffset + "  (期望 5)");
+            sb.AppendLine("回读 shadowAlpha   = " + c2.Style.ShadowAlpha + "  (期望 177)");
+            sb.AppendLine("回读 shadowColor   = " + (c2.Style.ShadowColor == null
+                              ? "null" : string.Join(",", c2.Style.ShadowColor)) + "  (期望 1,2,3)");
 
             bool ok = after.Contains("_说明")
                    && c2.Size.IconSize == 26 && c2.Size.LabelHeight == 18
                    && c2.Style.PlateAlpha == 88
                    && Math.Abs(c2.Style.FontSizePt - 6.5f) < 0.001f
                    && c2.Behaviour.GridStepX == 84 && c2.Behaviour.CollisionH == 58
+                   && c2.Style.ShadowOffset == 5
+                   && c2.Style.ShadowAlpha == 177
+                   && c2.Style.ShadowColor != null
+                   && c2.Style.ShadowColor.Length == 3
+                   && c2.Style.ShadowColor[0] == 1 && c2.Style.ShadowColor[1] == 2 && c2.Style.ShadowColor[2] == 3
                    && c2.Groups.Count == c.Groups.Count;
             sb.AppendLine(ok ? "★ 通过" : "✗ 不通过");
 

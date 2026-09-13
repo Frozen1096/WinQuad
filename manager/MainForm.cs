@@ -43,6 +43,13 @@ namespace WinQuad.Manager
         Button _btnBgColor, _btnBgClear;
         TrackBar _bgAlpha;
         Label _lblBgAlpha;
+
+        // 「跟随总配置」还是「本格单独设置」。
+        // true 时上面那几个控件改的是 _cfg.Style 里的默认值，false 时改的是当前格。
+        bool _bgColorFollow = true;
+        bool _bgAlphaFollow = true;
+        Label _lblBgMode;
+
         // 位置只由手动拖动决定，没有锚点下拉框了
         NumericUpDown _numCol, _numRow;
         Label _lblPosInfo;
@@ -472,8 +479,14 @@ namespace WinQuad.Manager
             AddRow(t, r++, "图标", iconRow);
 
             // 底色与透明度分两行：
-            //   底色行 = 色块 + 选色 + 跟随总配置
+            //   底色行 = 色块 + 选色 + 模式切换
             //   透明度行 = 整行滑块（像初版那样单开一小行，拖起来才够长、够准）
+            //
+            // ★ 关键设计：当这一格处于「跟随总配置」时，这里的色块和滑条改的是
+            //   **总配置里的默认值**（config.json 的 style.plateColor / plateAlpha），
+            //   而不是这一格的覆盖值。这样不用打开参数设置就能快速调默认值 ——
+            //   否则默认值只能靠「跟随总配置」按钮单向同步过去，改不动。
+            //   处于「本格单独设置」时，改的才是这一格自己的值。
             var colorRow = new FlowLayoutPanel
             {
                 Dock = DockStyle.Fill,
@@ -484,12 +497,12 @@ namespace WinQuad.Manager
             _bgSwatch = new Panel { Width = 40, Height = 24, BorderStyle = BorderStyle.FixedSingle, Margin = new Padding(0, 2, 6, 0) };
             _btnBgColor = new Button { Text = "选色", Width = 76, Height = 26, Margin = new Padding(0, 1, 6, 0) };
             _btnBgColor.Click += (s, e) => PickBgColor();
-            _btnBgClear = new Button { Text = "跟随总配置", Width = 96, Height = 26, Margin = new Padding(0, 1, 0, 0) };
-            _btnBgClear.Click += (s, e) => SetCurrentItem(it => it.BgColor = null);
+            _btnBgClear = new Button { Text = "改为本格单独设置", Width = 148, Height = 26, Margin = new Padding(0, 1, 6, 0) };
+            _btnBgClear.Click += (s, e) => ToggleBgMode();
             colorRow.Controls.Add(_bgSwatch);
             colorRow.Controls.Add(_btnBgColor);
             colorRow.Controls.Add(_btnBgClear);
-            AddRow(t, r++, "本格底色", colorRow);
+            AddRow(t, r++, "底色", colorRow);
 
             var alphaRow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = new Padding(0), MaximumSize = new Size(FieldMaxW, 0) };
             alphaRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -498,13 +511,29 @@ namespace WinQuad.Manager
             _bgAlpha.ValueChanged += (s, e) =>
             {
                 _lblBgAlpha.Text = _bgAlpha.Value.ToString();
+                if (_loading) return;
+                // 跟随总配置时改的是默认值，否则改这一格
+                if (_bgAlphaFollow) _cfg.Style.PlateAlpha = _bgAlpha.Value;
                 MarkDirty();
                 _preview.Invalidate();
             };
             _lblBgAlpha = new Label { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Text = "40", Margin = new Padding(0) };
             alphaRow.Controls.Add(_bgAlpha, 0, 0);
             alphaRow.Controls.Add(_lblBgAlpha, 1, 0);
-            AddRow(t, r++, "本格透明度", alphaRow);
+            AddRow(t, r++, "透明度", alphaRow);
+
+            // 模式提示：一眼看出现在改的是"所有格子的默认值"还是"这一格"
+            _lblBgMode = new Label
+            {
+                Dock = DockStyle.Top,
+                AutoSize = false,
+                Height = 30,
+                ForeColor = Color.DimGray,
+                Font = new Font("Microsoft YaHei UI", 8f),
+                Text = ""
+            };
+            parent.Controls.Add(_lblBgMode);
+            _lblBgMode.BringToFront();
 
             // 提示图标来源
             var hint = new Label
@@ -1004,16 +1033,18 @@ namespace WinQuad.Manager
                 if (it.BgColor != null && it.BgColor.Length >= 3)
                 {
                     var c = Color.FromArgb(it.BgColor[0], it.BgColor[1], it.BgColor[2]);
+                    _bgColorFollow = false;
                     _bgSwatch.Tag = c; _bgSwatch.BackColor = c;
                 }
                 else
                 {
+                    _bgColorFollow = true;
                     _bgSwatch.Tag = null;
-                    _bgSwatch.BackColor = _cfg != null
-                        ? Color.FromArgb(_cfg.Style.PlateColor[0], _cfg.Style.PlateColor[1], _cfg.Style.PlateColor[2])
-                        : SystemColors.Control;
+                    _bgSwatch.BackColor = MasterPlateColor();
                 }
+                _bgAlphaFollow = it.BgAlpha == null;
                 _bgAlpha.Value = Math.Max(0, Math.Min(255, it.BgAlpha ?? (_cfg?.Style.PlateAlpha ?? 40)));
+                UpdateBgModeHint();
             }
             finally { _loading = false; }
             _preview.Invalidate();
@@ -1026,8 +1057,78 @@ namespace WinQuad.Manager
             it.Caption = _txtCaption.Text.Trim();
             it.Path = _txtPath.Text.Trim();
             it.Icon = string.IsNullOrWhiteSpace(_txtIcon.Text) ? null : _txtIcon.Text.Trim();
-            if (_bgSwatch.Tag is Color c) it.BgColor = new[] { (int)c.R, (int)c.G, (int)c.B };
-            it.BgAlpha = _bgAlpha.Value;
+
+            // 跟随总配置时必须写回 null，不能把当前显示值固化成覆盖值。
+            // （原来的实现无条件写 it.BgAlpha = _bgAlpha.Value，保存一次「跟随」就没了。）
+            it.BgColor = _bgColorFollow ? null : new[] { (int)_bgSwatch.BackColor.R, (int)_bgSwatch.BackColor.G, (int)_bgSwatch.BackColor.B };
+            it.BgAlpha = _bgAlphaFollow ? (int?)null : _bgAlpha.Value;
+        }
+
+        /// <summary>总配置里的底板颜色。取不到就给个白色兜底。</summary>
+        Color MasterPlateColor()
+        {
+            var c = _cfg?.Style?.PlateColor;
+            return (c != null && c.Length >= 3) ? Color.FromArgb(c[0], c[1], c[2]) : Color.White;
+        }
+
+        /// <summary>刷新「现在改的是默认值还是这一格」的提示与按钮文字。</summary>
+        void UpdateBgModeHint()
+        {
+            if (_lblBgMode == null || _btnBgClear == null) return;
+
+            bool follow = _bgColorFollow && _bgAlphaFollow;
+            if (follow)
+            {
+                _btnBgClear.Text = "改为本格单独设置";
+                _lblBgMode.Text = "这一格跟随总配置：上面改的是所有格子的默认色与默认透明度。";
+                _lblBgMode.ForeColor = Color.FromArgb(0, 100, 170);
+            }
+            else
+            {
+                _btnBgClear.Text = "改回跟随总配置";
+                _lblBgMode.Text = "这一格有单独设置：上面只改这一格，不影响其他格子。";
+                _lblBgMode.ForeColor = Color.FromArgb(170, 90, 0);
+            }
+        }
+
+        /// <summary>
+        /// 在「跟随总配置」和「本格单独设置」之间切换。
+        /// 切回跟随时把这一格的覆盖值清掉；切到单独设置时用当前总配置值当起点。
+        /// </summary>
+        void ToggleBgMode()
+        {
+            var it = CurrentItem;
+            if (it == null) return;
+
+            bool nowFollow = _bgColorFollow && _bgAlphaFollow;
+            if (nowFollow)
+            {
+                // 跟随 -> 单独设置：把当前显示值固化成这一格的覆盖值
+                _bgColorFollow = false;
+                _bgAlphaFollow = false;
+                it.BgColor = new[] { (int)_bgSwatch.BackColor.R, (int)_bgSwatch.BackColor.G, (int)_bgSwatch.BackColor.B };
+                it.BgAlpha = _bgAlpha.Value;
+            }
+            else
+            {
+                // 单独设置 -> 跟随：清掉覆盖值，显示回总配置的值
+                _bgColorFollow = true;
+                _bgAlphaFollow = true;
+                it.BgColor = null;
+                it.BgAlpha = null;
+                var c = MasterPlateColor();
+                _bgSwatch.Tag = null;
+                _bgSwatch.BackColor = c;
+                _loading = true;
+                try { _bgAlpha.Value = Math.Max(0, Math.Min(255, _cfg?.Style.PlateAlpha ?? 40)); }
+                finally { _loading = false; }
+                _lblBgAlpha.Text = _bgAlpha.Value.ToString();
+            }
+
+            UpdateBgModeHint();
+            MarkDirty();
+            _itemList.Invalidate();
+            _preview.Invalidate();
         }
 
         #region 拖放添加
@@ -1134,21 +1235,6 @@ namespace WinQuad.Manager
         }
 
         #endregion
-
-        void SetCurrentItem(Action<GroupItem> act)        {
-            var it = CurrentItem;
-            if (it == null) return;
-            act(it);
-            if (it.BgColor == null && _cfg != null)
-            {
-                _bgSwatch.Tag = null;
-                _bgSwatch.BackColor = Color.FromArgb(_cfg.Style.PlateColor[0],
-                                                     _cfg.Style.PlateColor[1], _cfg.Style.PlateColor[2]);
-            }
-            MarkDirty();
-            _itemList.Invalidate();
-            _preview.Invalidate();
-        }
 
         /// <summary>
         /// 真正装了程序的格数。
@@ -1281,12 +1367,24 @@ namespace WinQuad.Manager
 
         void PickBgColor()
         {
-            using (var dlg = new ColorDialog { FullOpen = true, AnyColor = true })
+            using (var dlg = new ColorDialog { FullOpen = true, AnyColor = true, Color = _bgSwatch.BackColor })
             {
                 if (dlg.ShowDialog(this) != DialogResult.OK) return;
-                _bgSwatch.Tag = dlg.Color;
-                _bgSwatch.BackColor = dlg.Color;
+
+                if (_bgColorFollow)
+                {
+                    // 跟随总配置：改的是默认色，所有没单独设色的格子都会跟着变
+                    _bgSwatch.Tag = null;
+                    _bgSwatch.BackColor = dlg.Color;
+                    _cfg.Style.PlateColor = new[] { (int)dlg.Color.R, (int)dlg.Color.G, (int)dlg.Color.B };
+                }
+                else
+                {
+                    _bgSwatch.Tag = dlg.Color;
+                    _bgSwatch.BackColor = dlg.Color;
+                }
                 MarkDirty();
+                _itemList.Invalidate();
                 _preview.Invalidate();
             }
         }

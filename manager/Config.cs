@@ -287,6 +287,13 @@ namespace WinQuad.Manager
                 o = SetSec(o, "style", "outlineColor", JColor(st.OutlineColor));
                 o = SetSec(o, "style", "outlineAlpha", Num(st.OutlineAlpha));
                 o = SetSec(o, "style", "outlineWidth", Num(st.OutlineWidth));
+
+                // 投影三项。之前模型里有、这里漏了 —— 结果设置界面改了存不进 config.json。
+                o = SetSec(o, "style", "shadowOffset", Num(st.ShadowOffset));
+                o = SetSec(o, "style", "shadowAlpha", Num(st.ShadowAlpha));
+                o = SetSec(o, "style", "shadowColor",
+                    (st.ShadowColor != null && st.ShadowColor.Length >= 3) ? JColor(st.ShadowColor) : "null");
+
                 o = SetSec(o, "style", "iconShadow", Bool(st.IconShadow));
 
                 // ── behaviour ──
@@ -371,7 +378,33 @@ namespace WinQuad.Manager
 
             string qk = "\"" + key + "\"";
             int p = json.IndexOf(qk, open, StringComparison.Ordinal);
-            if (p < 0 || p >= end) return json;
+            if (p < 0 || p >= end)
+            {
+                // 这个键在这一段里不存在 —— 补一个。
+                //
+                // 不补的话会有个很隐蔽的坑：程序新加的配置项，在旧 config.json 上
+                // 怎么改都存不进去，而且完全没有报错（SetValue 原本直接原样返回）。
+                // 插在段落开头，缩进照抄段内第一行的，保持文件风格统一。
+                int ls = open + 1;
+                while (ls < end && (json[ls] == '\r' || json[ls] == '\n')) ls++;
+                int le = ls;
+                while (le < end && json[le] != '\r' && json[le] != '\n') le++;
+
+                string indent = "";
+                for (int i = ls; i < le; i++)
+                {
+                    if (json[i] == ' ' || json[i] == '\t') indent += json[i];
+                    else break;
+                }
+
+                string nl = json.Contains("\r\n") ? "\r\n" : "\n";
+                // 空段落 {"a":{}} 的首行就是 "}"，这时不要缩进也不要换行插入
+                if (ls < end && json[ls] == '}')
+                    return json.Substring(0, open + 1) + qk + ": " + literal + json.Substring(open + 1);
+
+                return json.Substring(0, open + 1) + nl + indent + qk + ": " + literal + ","
+                       + json.Substring(open + 1);
+            }
 
             // 必须确实是「键」：引号后面紧跟冒号。
             // 这样 "_cols说明" 之类的注释键、以及值里出现的同名字样都不会被误伤。

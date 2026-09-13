@@ -34,6 +34,7 @@ namespace WinQuad.Manager
         const int NoteH = 34;          // 说明行高
         const int LblW = 152;          // 标签列宽
         const int NumW = 76;           // 数字框宽度
+        const int SliderW = 208;       // 透明度滑条宽度
         const int GroupInner = 24;     // GroupBox 左右内边距合计
         const int ScrollReserve = 18;  // 恒定给竖向滚动条留位，否则出/收滚动条会让宽度来回抖
         const float Scale = 2.0f;      // 预览放大倍数（比主界面的 1.5 大，设置界面以看清为主）
@@ -44,6 +45,14 @@ namespace WinQuad.Manager
         readonly AppConfig _cfg;       // 编辑副本
         readonly List<GroupBox> _stack = new List<GroupBox>();
         readonly List<GroupMeta> _meta = new List<GroupMeta>();
+
+        /// <summary>悬停说明。参数变多之后，光看标签不容易知道某一项具体管什么。</summary>
+        readonly ToolTip _tip = new ToolTip
+        {
+            AutoPopDelay = 15000,
+            InitialDelay = 350,
+            ReshowDelay = 100
+        };
 
         /// <summary>每个组的行高基准 + 哪些行是「说明行」。</summary>
         sealed class GroupMeta
@@ -351,6 +360,52 @@ namespace WinQuad.Manager
             return c;
         }
 
+        /// <summary>
+        /// 0~255 的透明度用滑条，不用数字框。
+        /// 数字框要精确敲，而透明度是"拖到看着顺眼"的参数 —— 滑条能边拖边看实时预览。
+        /// 右边跟一个数字，方便想复现某个值时照着抄。
+        /// </summary>
+        Panel AlphaSlider(int val, Action<int> set, string tip = null)
+        {
+            int v = Math.Max(0, Math.Min(255, val));
+            var p = new Panel { Margin = new Padding(0), Dock = DockStyle.Fill };
+
+            var tb = new TrackBar
+            {
+                Left = 0, Top = 0,
+                Width = SliderW,
+                Minimum = 0, Maximum = 255,
+                TickStyle = TickStyle.None,
+                SmallChange = 1, LargeChange = 16,
+                AutoSize = false,
+                Height = 24,
+                Value = v
+            };
+            var lb = new Label
+            {
+                Left = SliderW + 8, Top = 0,
+                Width = 42, Height = 24,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Text = v.ToString()
+            };
+            tb.ValueChanged += (s, e) =>
+            {
+                lb.Text = tb.Value.ToString();
+                if (_loading) return;
+                set(tb.Value);
+                Touch();
+            };
+            p.Controls.Add(tb);
+            p.Controls.Add(lb);
+            p.Layout += (s, e) =>
+            {
+                tb.Top = Math.Max(0, (p.Height - tb.Height) / 2);
+                lb.Top = Math.Max(0, (p.Height - lb.Height) / 2);
+            };
+            if (tip != null) _tip.SetToolTip(tb, tip);
+            return p;
+        }
+
         Panel ColorRow(int[] rgb, Action<int[]> set)
         {
             var cur = PreviewPainter.Safe(rgb);
@@ -483,19 +538,34 @@ namespace WinQuad.Manager
         {
             var st = _cfg.Style;
             var gb = MakeGroup("外观",
-                RowH, RowH, RowH, RowH, RowH, RowH, RowH, RowH, RowH, RowH, NoteH);
+                RowH, RowH, RowH, RowH, RowH, RowH, RowH, RowH, RowH, RowH,   // 0-9
+                RowH, RowH, RowH,                                              // 10-12 投影
+                NoteH, NoteH);                                                 // 13-14 说明
 
             Row(gb, 0, "底板颜色", ColorRow(st.PlateColor, v => st.PlateColor = v));
-            Row(gb, 1, "底板透明度", Num(0, 255, st.PlateAlpha, v => st.PlateAlpha = v, false, 5));
-            Row(gb, 2, "悬停时底板透明度", Num(0, 255, st.PlateAlphaHover, v => st.PlateAlphaHover = v, false, 5));
+            Row(gb, 1, "底板透明度", AlphaSlider(st.PlateAlpha, v => st.PlateAlpha = v,
+                "每一格底板的默认透明度。文字看不清就先调这个（80~110 最有效）。\n单个格子可以在主界面右边单独覆盖。"));
+            Row(gb, 2, "悬停时底板透明度", AlphaSlider(st.PlateAlphaHover, v => st.PlateAlphaHover = v,
+                "鼠标停到某一格上时，那格底板变到多不透明。"));
             Row(gb, 3, "底板边框颜色", ColorRow(st.BorderColor, v => st.BorderColor = v));
-            Row(gb, 4, "边框透明度", Num(0, 255, st.BorderAlpha, v => st.BorderAlpha = v, false, 5));
+            Row(gb, 4, "边框透明度", AlphaSlider(st.BorderAlpha, v => st.BorderAlpha = v,
+                "格子边框的明显程度。格子看着糊成一整块就把它调大。"));
             Row(gb, 5, "文字颜色", ColorRow(st.TextColor, v => st.TextColor = v));
             Row(gb, 6, "悬停时文字颜色", ColorRow(st.TextColorHover, v => st.TextColorHover = v));
             Row(gb, 7, "描边颜色", ColorRow(st.OutlineColor, v => st.OutlineColor = v));
-            Row(gb, 8, "描边透明度", Num(0, 255, st.OutlineAlpha, v => st.OutlineAlpha = v, false, 5));
+            Row(gb, 8, "描边透明度", AlphaSlider(st.OutlineAlpha, v => st.OutlineAlpha = v,
+                "0 = 关闭描边。\n描边沿四/八个方向各画一遍，四周都有边、边缘更实；\n代价是把笔画撑胖，小字号下笔画密的字容易被填满。"));
             Row(gb, 9, "描边宽度", Num(0, 3, st.OutlineWidth, v => st.OutlineWidth = v, false));
-            RowFill(gb, 10, null, NoteLabel("文字看不清时：先把「底板透明度」提到 80~110（最有效），再把「描边透明度」拉到 255。"));
+
+            // ── 文字投影 ──
+            // 和描边是可以同时开的：投影在底层补对比度，描边在上面定边界。
+            Row(gb, 10, "投影偏移", Num(0, 6, st.ShadowOffset, v => st.ShadowOffset = v, false));
+            Row(gb, 11, "投影透明度", AlphaSlider(st.ShadowAlpha, v => st.ShadowAlpha = v,
+                "0 = 关闭投影（投影偏移也要 > 0 才有用）。\n投影只在右下垫一份暗色副本，字的形状完整保留 ——\n这是 Windows 画桌面图标标签用的手法。"));
+            Row(gb, 12, "投影颜色", ColorRow(st.ShadowColor ?? st.OutlineColor, v => st.ShadowColor = v));
+
+            RowFill(gb, 13, null, NoteLabel("投影和描边是两种不同的衬托手法，可以单独用也可以叠加。叠加顺序是「投影 → 描边 → 正文」，投影在最底层。"));
+            RowFill(gb, 14, null, NoteLabel("文字看不清时：先把「底板透明度」提到 80~110（最有效）；还不够就调「描边透明度」或加投影偏移。"));
         }
 
         void BuildFontGroup()
