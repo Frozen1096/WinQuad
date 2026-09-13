@@ -180,7 +180,11 @@ namespace WinQuad.Manager
             catch { g.DrawIcon(icon, box); }
         }
 
-        /// <summary>与覆盖层 DrawOutlinedText 同一套描边逻辑。样式由调用方传入，不反查窗体。</summary>
+        /// <summary>
+        /// 与覆盖层 DrawOutlinedText 同一套逻辑：投影与描边可以单独用也可以叠加，
+        /// 叠加时按「投影 → 描边 → 正文」的顺序，投影在最底层。
+        /// 样式由调用方传入，不反查窗体。
+        /// </summary>
         public static void DrawOutlinedText(Graphics g, string text, Rectangle box, Color color, StyleSection st)
         {
             if (string.IsNullOrEmpty(text)) return;
@@ -194,8 +198,23 @@ namespace WinQuad.Manager
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter |
                 TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix;
 
+            int so = st?.ShadowOffset ?? 0;
+            int sa = st?.ShadowAlpha ?? 200;
             int ow = st?.OutlineWidth ?? 1;
             int oa = st?.OutlineAlpha ?? 245;
+
+            // 1) 投影：只在右下垫暗色副本，字的形状完整保留
+            if (so > 0 && sa > 0)
+            {
+                var rgb = (st?.ShadowColor != null && st.ShadowColor.Length >= 3)
+                    ? st.ShadowColor : st?.OutlineColor;
+                var sc = Color.FromArgb(sa, Safe(rgb));
+                for (int i = so; i >= 1; i--)
+                    TextRenderer.DrawText(g, text, f,
+                        new Rectangle(box.X + i, box.Y + i, box.Width, box.Height), sc, flags);
+            }
+
+            // 2) 描边：压在投影上面
             if (ow > 0 && oa > 0)
             {
                 var oc = Color.FromArgb(oa, Safe(st.OutlineColor));
@@ -207,6 +226,8 @@ namespace WinQuad.Manager
                             new Rectangle(box.X + dx, box.Y + dy, box.Width, box.Height), oc, flags);
                     }
             }
+
+            // 3) 正文
             TextRenderer.DrawText(g, text, f, box, color, flags);
             f.Dispose();
         }

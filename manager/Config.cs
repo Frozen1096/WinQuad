@@ -60,6 +60,20 @@ namespace WinQuad.Manager
         [JsonPropertyName("outlineColor")] public int[] OutlineColor { get; set; } = { 0, 0, 0 };
         [JsonPropertyName("outlineAlpha")] public int OutlineAlpha { get; set; } = 245;
         [JsonPropertyName("outlineWidth")] public int OutlineWidth { get; set; } = 1;
+
+        /// <summary>
+        /// 文字投影的偏移像素数。0 = 关闭。
+        /// 和 OutlineWidth 二选一，投影优先。Windows 画桌面图标标签用的就是投影：
+        /// 只在右下垫一份暗色副本，不像描边那样把笔画撑胖、把字腔挤死。
+        /// </summary>
+        [JsonPropertyName("shadowOffset")] public int ShadowOffset { get; set; }
+
+        /// <summary>投影透明度（0~255）。只在 ShadowOffset > 0 时起作用。</summary>
+        [JsonPropertyName("shadowAlpha")] public int ShadowAlpha { get; set; } = 200;
+
+        /// <summary>投影颜色。留空则复用 OutlineColor。</summary>
+        [JsonPropertyName("shadowColor")] public int[] ShadowColor { get; set; }
+
         [JsonPropertyName("iconShadow")] public bool IconShadow { get; set; }
     }
 

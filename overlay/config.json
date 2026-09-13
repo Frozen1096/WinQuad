@@ -60,11 +60,19 @@
     "textColorHover": [255, 255, 255],
     "_textColorHover说明": "悬停时的正文颜色。",
     "outlineColor": [0, 0, 0],
-    "_outlineColor说明": "文字描边颜色。浅色壁纸上用黑色描边最清楚。",
+    "_outlineColor说明": "文字描边颜色。投影颜色留空时也复用这个。",
     "outlineAlpha": 245,
-    "_outlineAlpha说明": "描边透明度。0 = 关闭描边。文字糊就调大这个值。",
+    "_outlineAlpha说明": "描边透明度。0 = 关闭描边。",
     "outlineWidth": 1,
-    "_outlineWidth说明": "描边宽度（像素）。1 最自然，2 更重但会糊。",
+    "_outlineWidth说明": "描边宽度（像素）。1 = 只围一圈做边缘定义；2 会把笔画撑胖、字腔挤死，小字号下会糊。",
+
+    "shadowOffset": 0,
+    "_shadowOffset说明": "★ 文字投影的偏移像素数。0 = 关闭。Windows 画桌面图标标签用的就是投影：只在右下垫一份暗色副本，不像描边那样四面围死，字的形状能完整保留。和描边**可以同时开**，叠加顺序是「投影 → 描边 → 正文」，投影在最底层。小字号下推荐「投影 2 + 描边 1」：既有对比度又有边缘定义。",
+    "shadowAlpha": 200,
+    "_shadowAlpha说明": "投影透明度（0~255）。只在 shadowOffset > 0 时起作用。",
+    "shadowColor": null,
+    "_shadowColor说明": "投影颜色。null = 复用上面的 outlineColor。",
+
     "iconShadow": false,
     "_iconShadow说明": "是否为图标加投影。图标本身通常自带足够对比度，默认关闭。"
   },

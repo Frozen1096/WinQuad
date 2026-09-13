@@ -317,6 +317,23 @@ namespace WinQuad
         public int[] OutlineColor { get; set; } = { 0, 0, 0 };
         public int OutlineAlpha { get; set; } = 245;
         public int OutlineWidth { get; set; } = 1;
+
+        /// <summary>
+        /// 文字投影的偏移像素数。0 = 关闭。
+        ///
+        /// 和 OutlineWidth 是**二选一**的关系，投影优先。
+        /// 这是 Windows 自己画桌面图标标签的手法：只在右下垫一份暗色副本，
+        /// 而不是四面八方围一圈。描边会把笔画"撑胖"、把字腔挤死；
+        /// 投影不改变字的形状，只在一侧补对比度 —— 小字号下差别很明显。
+        /// </summary>
+        public int ShadowOffset { get; set; }
+
+        /// <summary>投影的透明度（0~255）。只在 ShadowOffset > 0 时起作用。</summary>
+        public int ShadowAlpha { get; set; } = 200;
+
+        /// <summary>投影颜色。留空则复用 OutlineColor。</summary>
+        public int[] ShadowColor { get; set; }
+
         public bool IconShadow { get; set; }
     }
 
@@ -1105,9 +1122,18 @@ namespace WinQuad
             Color.FromArgb(Math.Max(0, Math.Min(255, alpha)), c);
 
         /// <summary>
-        /// 小字在壁纸上容易糊。用 Windows 自己在浅色壁纸上画桌面图标标签的同一套手法：
-        /// 深色字沿四/八个方向各偏移 outlineWidth 像素画一遍，正中再画真正的浅色正文
-        /// —— 等于给字加了一圈暗描边。中心那遍才是正文，其余都是描边。
+        /// 小字在壁纸上容易糊。这里提供两种补对比度的手法，**可以单独用，也可以叠加**：
+        ///
+        ///   · 投影（ShadowOffset > 0）—— Windows 画桌面图标标签用的就是这个。
+        ///     只在右下方向垫一份暗色副本，字的形状完整保留，只在一侧补对比度。
+        ///   · 描边（OutlineWidth > 0）—— 四/八个方向各画一遍，等于给字围一圈暗色。
+        ///     四周都有边，边缘更"实"；代价是把笔画撑胖、把字腔挤死，
+        ///     7pt 这种小字号下尤其明显，"搜索""磁盘"这类笔画密的字容易被填满。
+        ///
+        /// 两个都开会按「投影 → 描边 → 正文」的顺序叠，投影在最底层。
+        /// 这样一来既有投影的对比度，又有描边的边缘定义，且描边只压一圈、不至于太糊。
+        ///
+        /// 中心那一遍永远是真正的正文，其余都是衬托。
         /// </summary>
         void DrawOutlinedText(Graphics g, string text, Rectangle box, Color color)
         {
@@ -1118,10 +1144,27 @@ namespace WinQuad
                 TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis |
                 TextFormatFlags.NoPrefix;
 
+            int so = _cfg.Style.ShadowOffset;
+            int sa = _cfg.Style.ShadowAlpha;
             int ow = _cfg.Style.OutlineWidth;
-            if (ow > 0 && _cfg.Style.OutlineAlpha > 0)
+            int oa = _cfg.Style.OutlineAlpha;
+
+            // 1) 投影：从最远的一层往里画，最后一层紧贴正文，边缘才不会发虚
+            if (so > 0 && sa > 0)
             {
-                Color oc = ToColorSafe(_cfg.Style.OutlineColor, _cfg.Style.OutlineAlpha);
+                int[] rgb = _cfg.Style.ShadowColor != null && _cfg.Style.ShadowColor.Length >= 3
+                    ? _cfg.Style.ShadowColor
+                    : _cfg.Style.OutlineColor;
+                Color sc = ToColorSafe(rgb, sa);
+                for (int i = so; i >= 1; i--)
+                    TextRenderer.DrawText(g, text, _labelFont,
+                        new Rectangle(box.X + i, box.Y + i, box.Width, box.Height), sc, flags);
+            }
+
+            // 2) 描边：压在投影上面
+            if (ow > 0 && oa > 0)
+            {
+                Color oc = ToColorSafe(_cfg.Style.OutlineColor, oa);
                 // 四方向 + 四对角，描边更均匀
                 for (int dy = -ow; dy <= ow; dy += ow)
                     for (int dx = -ow; dx <= ow; dx += ow)
@@ -1132,6 +1175,7 @@ namespace WinQuad
                     }
             }
 
+            // 3) 正文
             TextRenderer.DrawText(g, text, _labelFont, box, color, flags);
         }
 
