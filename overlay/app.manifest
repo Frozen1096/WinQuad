@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <assemblyIdentity version="1.0.0.0" name="WinQuad" />
+
+  <!--
+    明确要求以普通权限（asInvoker）运行。
+
+    本来不写这份清单，SDK 给的默认值也是 asInvoker；但那是个"默认行为"，
+    依赖它等于把保证寄托在工具链上。写死在这里，谁来看源码都能一眼确认。
+
+    为什么必须普通权限：覆盖层要 SetParent 挂到 explorer.exe 的桌面窗口
+    （SHELLDLL_DefView）上。跨完整性级别做这件事会被 UIPI 拦掉，
+    表现是宫格起不来或者点了没反应。管理器那边还有一条更要紧的 ——
+    提权后收不到资源管理器的拖放。
+
+    注意：如果可执行文件（或它的快捷方式）在"属性 → 兼容性"里勾了
+    "以管理员身份运行"，这份清单会被那个勾覆盖。管理器启动时会检查并提示取消。
+  -->
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false" />
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10 / 11 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}" />
+    </application>
+  </compatibility>
+</assembly>

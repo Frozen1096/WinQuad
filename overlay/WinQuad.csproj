@@ -10,6 +10,12 @@
     <RootNamespace>WinQuad</RootNamespace>
     <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <!-- 显式声明 asInvoker：覆盖层要 SetParent 挂到 explorer 的桌面窗口上，
+         提权会被 UIPI 拦掉。不写清单时 SDK 默认也是 asInvoker，但那是"默认行为"，
+         写死在这里更明确。 -->
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- 图标源文件是 assets\icon.svg，用 assets\render-icon.ps1 + make-ico.ps1 生成 -->
+    <ApplicationIcon>..\assets\icon.ico</ApplicationIcon>
 
     <!-- v0.1：公开测试初版，给朋友试用的 -->
     <Version>0.1.0</Version>

@@ -10,6 +10,8 @@
     <RootNamespace>WinQuad.Manager</RootNamespace>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- 图标源文件是 assets\icon.svg，用 assets\render-icon.ps1 + make-ico.ps1 生成 -->
+    <ApplicationIcon>..\assets\icon.ico</ApplicationIcon>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
 
     <!-- v0.1：公开测试初版，给朋友试用的 -->

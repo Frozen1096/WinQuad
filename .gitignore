@@ -28,6 +28,12 @@ save-test-result.txt
 publish/
 *.zip
 
+# ── 图标渲染的中间产物 ──
+# assets/icon.ico 和 assets/icon.svg 要进仓库；
+# png/ 是 render-icon.ps1 从 svg 生成的中间文件，随时能重跑，不入库。
+assets/png/
+assets/_*
+
 # ── 编辑器 / 系统 ──
 Thumbs.db
 Desktop.ini

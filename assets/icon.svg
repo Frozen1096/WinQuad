@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!--
+    WinQuad 图标
+    ============================================================
+    结构：白色圆角底板 + 四宫格，左下格是浅蓝底 + 蓝箭头的「快捷方式」格。
+          箭头放在左下，和 Windows 快捷方式小箭头的位置一致。
+
+    配色：四个色相沿用「红绿黄蓝」这个一看就懂的骨架，
+          但取值是重新配的，没有照抄任何厂商的官方品牌色
+          （那是人家的商标资产，第三方应用整套照搬既不合规、观感上也像蹭）。
+          统一把饱和度收到 60~75%、明度收到 48~58%，
+          四个色块的视觉分量因此是均等的。
+
+          红 #E4573D   绿 #86C232   黄 #F2B33D
+          箭头格底 #C2E2F7   箭头 #1F7FC4
+
+    源文件就是本 SVG。改了它之后依次跑：
+          assets/render-icon.ps1   → 生成 assets/png/ 下各尺寸 PNG
+          assets/make-ico.ps1      → 打包成 assets/icon.ico（9 个尺寸）
+    两个 csproj 通过 <ApplicationIcon> 引用这个 ico。
+    ============================================================
+  -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0"    stop-color="#FFFFFF"/>
+      <stop offset="0.55" stop-color="#FAFBFD"/>
+      <stop offset="1"    stop-color="#EDF1F6"/>
+    </linearGradient>
+
+    <linearGradient id="toplight" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.5"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+
+    <linearGradient id="shade" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.13"/>
+    </linearGradient>
+
+    <filter id="soft" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="4" stdDeviation="5" flood-color="#0A1A2A" flood-opacity="0.26"/>
+    </filter>
+  </defs>
+
+  <!-- 底板 -->
+  <g filter="url(#soft)">
+    <rect x="16" y="16" width="224" height="224" rx="52"
+          fill="url(#tile)" stroke="#D5DCE5" stroke-width="1.5"/>
+  </g>
+  <rect x="16" y="16" width="224" height="112" rx="52" fill="url(#toplight)"/>
+
+  <!-- 四宫格 -->
+  <rect x="44"  y="44"  width="78" height="78" rx="18" fill="#E4573D"/>
+  <rect x="134" y="44"  width="78" height="78" rx="18" fill="#86C232"/>
+  <rect x="134" y="134" width="78" height="78" rx="18" fill="#F2B33D"/>
+  <!-- 左下：快捷方式格 -->
+  <rect x="44"  y="134" width="78" height="78" rx="18" fill="#C2E2F7"/>
+
+  <!-- 每格下半压一点暗，做出体积感 -->
+  <rect x="44"  y="44"  width="78" height="78" rx="18" fill="url(#shade)"/>
+  <rect x="134" y="44"  width="78" height="78" rx="18" fill="url(#shade)"/>
+  <rect x="134" y="134" width="78" height="78" rx="18" fill="url(#shade)"/>
+
+  <!-- 快捷方式箭头：圆头斜杆 + 折角箭头，指向右上 -->
+  <g fill="none" stroke="#1F7FC4" stroke-width="14"
+     stroke-linecap="round" stroke-linejoin="round">
+    <path d="M 68 188 L 93 163"/>
+    <path d="M 78 155 L 101 155 L 101 178"/>
+  </g>
+</svg>
