@@ -1,0 +1,34 @@
+# ── 编译产物 ──
+bin/
+obj/
+*.user
+*.suo
+.vs/
+
+# ── 运行时生成的东西（每个人机器上都不一样，不该进仓库）──
+# 覆盖层与管理器的日志
+winquad.log
+winquad-manager.log
+deskgrid.log
+manager.log
+# 探测器输出（--detect 生成，每台机器结果不同）
+spacing-detect.json
+# 自检脚本的输出
+save-test-result.txt
+*.bak
+
+# ── 用户自己的配置 ──
+# config.json 与 group-*.json 是模板/示例，要进仓库；
+# 但如果你在仓库里直接跑程序，程序会改写它们。改完请自行决定要不要提交。
+# 想彻底避免误提交，把下面两行取消注释：
+# group-*.json
+# config.json
+
+# ── 打包产物 ──
+publish/
+*.zip
+
+# ── 编辑器 / 系统 ──
+Thumbs.db
+Desktop.ini
+*.swp

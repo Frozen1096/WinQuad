@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>WinQuad.Manager</AssemblyName>
+    <RootNamespace>WinQuad.Manager</RootNamespace>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+
+    <!-- v0.1：公开测试初版，给朋友试用的 -->
+    <Version>0.1.0</Version>
+    <FileVersion>0.1.0.0</FileVersion>
+    <AssemblyVersion>0.1.0.0</AssemblyVersion>
+    <Product>WinQuad —— Windows 桌面四宫格</Product>
+    <Description>WinQuad 管理器：给四宫格一个图形界面。</Description>
+    <Company>Frozen1096</Company>
+    <Copyright>Copyright (C) 2026 Frozen1096</Copyright>
+    <PackageLicenseExpression>GPL-3.0-or-later</PackageLicenseExpression>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="Config.cs" />
+    <Compile Include="PathResolver.cs" />
+    <Compile Include="ElevationFix.cs" />
+    <Compile Include="GroupFixer.cs" />
+    <Compile Include="SaveRegressionTest.cs" />
+    <Compile Include="CommentRestorer.cs" />
+    <Compile Include="MainForm.cs" />
+    <Compile Include="PreviewPainter.cs" />
+    <Compile Include="SettingsForm.cs" />
+  </ItemGroup>
+
+</Project>

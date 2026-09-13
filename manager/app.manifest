@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <assemblyIdentity version="1.0.0.0" name="WinQuad.Manager" />
+
+  <!--
+    明确要求以普通权限（asInvoker）运行。
+
+    为什么重要：本程序要从资源管理器接收拖放，而 Windows 的 UIPI
+    禁止普通权限进程（explorer.exe）向管理员进程投放数据。
+    一旦被提权，拖放就完全不可用（光标一直是禁止号，且 DragEnter 都不触发）。
+
+    注意：如果可执行文件（或它的快捷方式）在"属性 → 兼容性"里勾了
+    "以管理员身份运行"，这个 manifest 会被覆盖 —— 那种情况下会弹窗提示用户取消勾选。
+  -->
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false" />
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+    </windowsSettings>
+  </application>
+
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10 / 11 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}" />
+    </application>
+  </compatibility>
+</assembly>

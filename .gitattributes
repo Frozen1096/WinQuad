@@ -1,0 +1,17 @@
+# 这是个纯 Windows 项目，源码统一用 CRLF，免得每次提交都出现整文件"被修改"的假差异。
+# 规则来自 git 的 eol 归一化：仓库里存 LF，检出到工作区时按下面的规则换成 CRLF。
+* text=auto eol=crlf
+
+# Markdown 保持 LF —— GitHub 上更常见，diff 也干净
+*.md text eol=lf
+
+# 二进制文件别做换行转换，否则文件会被改坏
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.exe binary
+*.dll binary
+*.pdb binary
+*.zip binary

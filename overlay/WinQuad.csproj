@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>WinQuad</AssemblyName>
+    <RootNamespace>WinQuad</RootNamespace>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+
+    <!-- v0.1：公开测试初版，给朋友试用的 -->
+    <Version>0.1.0</Version>
+    <FileVersion>0.1.0.0</FileVersion>
+    <AssemblyVersion>0.1.0.0</AssemblyVersion>
+    <Product>WinQuad —— Windows 桌面四宫格</Product>
+    <Description>把桌面快捷方式收进 2×2 的小格子，每个格子只占一个图标的位置。</Description>
+    <Company>Frozen1096</Company>
+    <Copyright>Copyright (C) 2026 Frozen1096</Copyright>
+    <PackageLicenseExpression>GPL-3.0-or-later</PackageLicenseExpression>
+  </PropertyGroup>
+
+</Project>
