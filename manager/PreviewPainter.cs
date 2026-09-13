@@ -183,6 +183,10 @@ namespace WinQuad.Manager
         /// <summary>
         /// 与覆盖层 DrawOutlinedText 同一套逻辑：投影与描边可以单独用也可以叠加，
         /// 叠加时按「投影 → 描边 → 正文」的顺序，投影在最底层。
+        ///
+        /// 和覆盖层一样，整段先画到 32bpp 离屏位图再贴回 —— 窗口 DC 上 GDI 会用
+        /// ClearType 次像素渲染，笔画边缘带黄/青/品红彩边；画到带 Alpha 的位图上
+        /// 则会退化成灰度抗锯齿，颜色干净，而字符度量完全不变。
         /// 样式由调用方传入，不反查窗体。
         /// </summary>
         public static void DrawOutlinedText(Graphics g, string text, Rectangle box, Color color, StyleSection st)
@@ -203,32 +207,61 @@ namespace WinQuad.Manager
             int ow = st?.OutlineWidth ?? 1;
             int oa = st?.OutlineAlpha ?? 245;
 
-            // 1) 投影：只在右下垫暗色副本，字的形状完整保留
-            if (so > 0 && sa > 0)
-            {
-                var rgb = (st?.ShadowColor != null && st.ShadowColor.Length >= 3)
-                    ? st.ShadowColor : st?.OutlineColor;
-                var sc = Color.FromArgb(sa, Safe(rgb));
-                for (int i = so; i >= 1; i--)
-                    TextRenderer.DrawText(g, text, f,
-                        new Rectangle(box.X + i, box.Y + i, box.Width, box.Height), sc, flags);
-            }
+            int pad = Math.Max(so, ow);
+            int bw = box.Width + pad * 2;
+            int bh = box.Height + pad * 2;
 
-            // 2) 描边：压在投影上面
-            if (ow > 0 && oa > 0)
+            using (var bmp = new Bitmap(Math.Max(1, bw), Math.Max(1, bh),
+                                        System.Drawing.Imaging.PixelFormat.Format32bppArgb))
             {
-                var oc = Color.FromArgb(oa, Safe(st.OutlineColor));
-                for (int dy = -ow; dy <= ow; dy += ow)
-                    for (int dx = -ow; dx <= ow; dx += ow)
+                using (var bg = Graphics.FromImage(bmp))
+                {
+                    bg.Clear(Color.Transparent);
+
+                    // ★ 和覆盖层一样：必须显式指定灰度抗锯齿。
+                    // 默认设置下 TextRenderer 在带 Alpha 的位图上会走 ClearType，
+                    // 白字的笔画末端会出现黄/青/品红彩边（实测 148 个彩色像素、极差 187；
+                    // 指定 AntiAliasGridFit 后降到 0 个、极差 4）。
+                    bg.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+
+                    var inner = new Rectangle(pad, pad, box.Width, box.Height);
+
+                    // 1) 投影：只在右下垫暗色副本，字的形状完整保留
+                    if (so > 0 && sa > 0)
                     {
-                        if (dx == 0 && dy == 0) continue;
-                        TextRenderer.DrawText(g, text, f,
-                            new Rectangle(box.X + dx, box.Y + dy, box.Width, box.Height), oc, flags);
+                        var rgb = (st?.ShadowColor != null && st.ShadowColor.Length >= 3)
+                            ? st.ShadowColor : st?.OutlineColor;
+                        var sc = Color.FromArgb(sa, Safe(rgb));
+                        for (int i = so; i >= 1; i--)
+                            TextRenderer.DrawText(bg, text, f,
+                                new Rectangle(inner.X + i, inner.Y + i, inner.Width, inner.Height), sc, flags);
                     }
+
+                    // 2) 描边：压在投影上面
+                    if (ow > 0 && oa > 0)
+                    {
+                        var oc = Color.FromArgb(oa, Safe(st.OutlineColor));
+                        for (int dy = -ow; dy <= ow; dy += ow)
+                            for (int dx = -ow; dx <= ow; dx += ow)
+                            {
+                                if (dx == 0 && dy == 0) continue;
+                                TextRenderer.DrawText(bg, text, f,
+                                    new Rectangle(inner.X + dx, inner.Y + dy, inner.Width, inner.Height), oc, flags);
+                            }
+                    }
+
+                    // 3) 正文
+                    TextRenderer.DrawText(bg, text, f, inner, color, flags);
+                }
+
+                g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
+                g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
+                g.DrawImage(bmp,
+                    new Rectangle(box.X - pad, box.Y - pad, bw, bh),
+                    new Rectangle(0, 0, bw, bh),
+                    GraphicsUnit.Pixel);
             }
 
-            // 3) 正文
-            TextRenderer.DrawText(g, text, f, box, color, flags);
             f.Dispose();
         }
 

@@ -69,6 +69,32 @@ namespace WinQuad
         [DllImport("user32.dll", SetLastError = true)]
         public static extern int SetWindowRgn(IntPtr h, IntPtr hRgn, bool redraw);
 
+        // --- 右键菜单「属性」：调系统的文件属性对话框 ---
+        // 必须走 ShellExecuteEx + SEE_MASK_INVOKEIDLIST，lpVerb 传 "properties"。
+        // 这是资源管理器右键「属性」用的同一条路，弹出来的就是原生那个多标签属性页。
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        public struct SHELLEXECUTEINFO
+        {
+            public int cbSize;
+            public uint fMask;
+            public IntPtr hwnd;
+            [MarshalAs(UnmanagedType.LPWStr)] public string lpVerb;
+            [MarshalAs(UnmanagedType.LPWStr)] public string lpFile;
+            [MarshalAs(UnmanagedType.LPWStr)] public string lpParameters;
+            [MarshalAs(UnmanagedType.LPWStr)] public string lpDirectory;
+            public int nShow;
+            public IntPtr hInstApp;
+            public IntPtr lpIDList;
+            [MarshalAs(UnmanagedType.LPWStr)] public string lpClass;
+            public IntPtr hkeyClass;
+            public uint dwHotKey;
+            public IntPtr hIcon;
+            public IntPtr hProcess;
+        }
+
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern bool ShellExecuteEx(ref SHELLEXECUTEINFO info);
+
         [DllImport("gdi32.dll")]
         public static extern IntPtr CreateRectRgn(int l, int t, int r, int b);
 
@@ -1134,6 +1160,15 @@ namespace WinQuad
         /// 这样一来既有投影的对比度，又有描边的边缘定义，且描边只压一圈、不至于太糊。
         ///
         /// 中心那一遍永远是真正的正文，其余都是衬托。
+        ///
+        /// 【为什么整段先画到离屏位图再贴】
+        /// 直接画到窗口 DC 上时，GDI 会用 ClearType 做次像素渲染 —— 笔画边缘带上
+        /// 黄/青/品红的彩边。7pt 的中文本来就小，这些彩边糊在笔画上反而更难认
+        /// （放大 10 倍看非常明显）。
+        ///
+        /// 而画到 32bpp 带 Alpha 的位图上时，GDI 没法做次像素渲染，会自动退化成
+        /// **灰度抗锯齿**，彩边就没了。绕这一圈的好处是 TextRenderer 的字符度量、
+        /// 断行、省略号行为全都保持不变，只是颜色干净了。
         /// </summary>
         void DrawOutlinedText(Graphics g, string text, Rectangle box, Color color)
         {
@@ -1149,34 +1184,65 @@ namespace WinQuad
             int ow = _cfg.Style.OutlineWidth;
             int oa = _cfg.Style.OutlineAlpha;
 
-            // 1) 投影：从最远的一层往里画，最后一层紧贴正文，边缘才不会发虚
-            if (so > 0 && sa > 0)
-            {
-                int[] rgb = _cfg.Style.ShadowColor != null && _cfg.Style.ShadowColor.Length >= 3
-                    ? _cfg.Style.ShadowColor
-                    : _cfg.Style.OutlineColor;
-                Color sc = ToColorSafe(rgb, sa);
-                for (int i = so; i >= 1; i--)
-                    TextRenderer.DrawText(g, text, _labelFont,
-                        new Rectangle(box.X + i, box.Y + i, box.Width, box.Height), sc, flags);
-            }
+            // 投影和描边都会画到正文框外面去，离屏位图得留出余量
+            int pad = Math.Max(so, ow);
+            int bw = box.Width + pad * 2;
+            int bh = box.Height + pad * 2;
+            if (bw <= 0 || bh <= 0) return;
 
-            // 2) 描边：压在投影上面
-            if (ow > 0 && oa > 0)
+            using (var bmp = new Bitmap(bw, bh, System.Drawing.Imaging.PixelFormat.Format32bppArgb))
             {
-                Color oc = ToColorSafe(_cfg.Style.OutlineColor, oa);
-                // 四方向 + 四对角，描边更均匀
-                for (int dy = -ow; dy <= ow; dy += ow)
-                    for (int dx = -ow; dx <= ow; dx += ow)
+                using (var bg = Graphics.FromImage(bmp))
+                {
+                    bg.Clear(Color.Transparent);
+
+                    // ★ 关键的一行：强制灰度抗锯齿。
+                    // 不设它的话，TextRenderer 在带 Alpha 的位图上会走 ClearType，
+                    // 笔画末端出现黄/青/品红的彩边 —— 白字尤其明显（实测白字 148 个彩色像素、
+                    // 最大 RGB 极差 187；设成 AntiAliasGridFit 之后是 0 个、极差 4）。
+                    // 试过 SingleBitPerPixelGridFit 和换成不透明的 32bppRgb，都没用。
+                    bg.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+
+                    var inner = new Rectangle(pad, pad, box.Width, box.Height);
+
+                    // 1) 投影：从最远的一层往里画，最后一层紧贴正文，边缘才不会发虚
+                    if (so > 0 && sa > 0)
                     {
-                        if (dx == 0 && dy == 0) continue;
-                        TextRenderer.DrawText(g, text, _labelFont,
-                            new Rectangle(box.X + dx, box.Y + dy, box.Width, box.Height), oc, flags);
+                        int[] rgb = _cfg.Style.ShadowColor != null && _cfg.Style.ShadowColor.Length >= 3
+                            ? _cfg.Style.ShadowColor
+                            : _cfg.Style.OutlineColor;
+                        Color sc = ToColorSafe(rgb, sa);
+                        for (int i = so; i >= 1; i--)
+                            TextRenderer.DrawText(bg, text, _labelFont,
+                                new Rectangle(inner.X + i, inner.Y + i, inner.Width, inner.Height), sc, flags);
                     }
-            }
 
-            // 3) 正文
-            TextRenderer.DrawText(g, text, _labelFont, box, color, flags);
+                    // 2) 描边：压在投影上面
+                    if (ow > 0 && oa > 0)
+                    {
+                        Color oc = ToColorSafe(_cfg.Style.OutlineColor, oa);
+                        // 四方向 + 四对角，描边更均匀
+                        for (int dy = -ow; dy <= ow; dy += ow)
+                            for (int dx = -ow; dx <= ow; dx += ow)
+                            {
+                                if (dx == 0 && dy == 0) continue;
+                                TextRenderer.DrawText(bg, text, _labelFont,
+                                    new Rectangle(inner.X + dx, inner.Y + dy, inner.Width, inner.Height), oc, flags);
+                            }
+                    }
+
+                    // 3) 正文
+                    TextRenderer.DrawText(bg, text, _labelFont, inner, color, flags);
+                }
+
+                // 贴回原处。用 Pixel 单位的显式矩形，避免 GDI+ 按 DPI 重采样
+                g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
+                g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
+                g.DrawImage(bmp,
+                    new Rectangle(box.X - pad, box.Y - pad, bw, bh),
+                    new Rectangle(0, 0, bw, bh),
+                    GraphicsUnit.Pixel);
+            }
         }
 
         static GraphicsPath Round(Rectangle r, int rad)
@@ -1291,6 +1357,13 @@ namespace WinQuad
 
         protected override void OnMouseDown(MouseEventArgs e)
         {
+            // 右键：先记下点在哪一格，菜单弹出时会按这一格重建条目
+            if (e.Button == MouseButtons.Right)
+            {
+                _menuCell = _m.HitLaunch(e.Location);
+                return;
+            }
+
             if (e.Button != MouseButtons.Left) return;
             // 唯一拖动触发点：整个网格最外圈的环。内部留给双击，绝不冲突。
             if (!_m.HitRing(e.Location)) return;
@@ -1406,9 +1479,40 @@ namespace WinQuad
 
         #region 右键菜单
 
+        ContextMenuStrip _menu;
+        int _menuCell = -1;   // 右键时命中的格子下标；-1 = 没落在格子上
+
         public void BuildContextMenu()
         {
-            var menu = new ContextMenuStrip();
+            _menu = new ContextMenuStrip();
+            // 菜单内容随"右键点在哪一格"变，所以每次弹出前重建
+            _menu.Opening += (s, e) => RebuildMenuItems();
+            ContextMenuStrip = _menu;
+        }
+
+        void RebuildMenuItems()
+        {
+            var menu = _menu;
+            if (menu == null) return;
+            menu.Items.Clear();
+
+            // ── 当前格子 ──
+            // 右键落在某个格子上、且那一格有程序，就按"像正常快捷方式一样"给它一套操作。
+            var cur = ItemAt(_menuCell);
+            var curPath = ResolveExistingPath(cur);
+            if (curPath != null)
+            {
+                string name = string.IsNullOrWhiteSpace(cur.Caption)
+                    ? Path.GetFileName(curPath) : cur.Caption;
+
+                var open = new ToolStripMenuItem("打开 " + name, null, (s, e) => Program.Launch(cur));
+                open.Font = new Font(menu.Font, FontStyle.Bold);
+                menu.Items.Add(open);
+
+                menu.Items.Add("打开文件位置", null, (s, e) => RevealInExplorer(curPath));
+                menu.Items.Add("属性", null, (s, e) => ShowFileProperties(curPath));
+                menu.Items.Add(new ToolStripSeparator());
+            }
 
             // ── 位置 ──
             // 位置只由手动拖动决定。这里只提供"记住当前位置"，不再有自动角落。
@@ -1416,6 +1520,8 @@ namespace WinQuad
             posMenu.DropDownItems.Add("记住当前位置（写入配置文件）", null, (s, e) => RememberPosition());
             menu.Items.Add(posMenu);
 
+            // ── 配置 ──
+            menu.Items.Add("用 WinQuad 管理器打开配置", null, (s, e) => OpenManager());
             menu.Items.Add("编辑本宫格内容（" + Path.GetFileName(_groupPath) + "）",
                 null, (s, e) => OpenPath(_groupPath));
             menu.Items.Add("编辑总配置（config.json）", null, (s, e) => OpenPath(Program.ConfigPath));
@@ -1427,7 +1533,72 @@ namespace WinQuad
             menu.Items.Add("打开日志", null, (s, e) => OpenPath(Program.LogPath));
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("退出 WinQuad", null, (s, e) => Application.Exit());
-            ContextMenuStrip = menu;
+        }
+
+        /// <summary>
+        /// 取这一格真正能操作的文件路径。
+        /// .url / 命令行的条目不能直接拿去"打开文件位置"或"属性"，所以只认存在的文件；
+        /// 路径不存在（程序被卸载/挪走）就返回 null，菜单里那三项干脆不出现。
+        /// </summary>
+        static string ResolveExistingPath(GroupItem it)
+        {
+            if (it == null || string.IsNullOrWhiteSpace(it.Path)) return null;
+            try { return File.Exists(it.Path) ? it.Path : null; }
+            catch { return null; }
+        }
+
+        /// <summary>在资源管理器里定位到这个文件（选中状态），等价于快捷方式的「打开文件位置」。</summary>
+        static void RevealInExplorer(string path)
+        {
+            try
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "explorer.exe",
+                    Arguments = "/select,\"" + path + "\"",
+                    UseShellExecute = true
+                });
+            }
+            catch (Exception ex) { Program.Log("[打开文件位置失败] " + path + " : " + ex.Message); }
+        }
+
+        /// <summary>
+        /// 弹系统的文件属性对话框 —— 和资源管理器右键「属性」是同一个。
+        /// 必须是 STA 线程；覆盖层本来就是 [STAThread]，没问题。
+        /// </summary>
+        static void ShowFileProperties(string path)
+        {
+            try
+            {
+                var sei = new Native.SHELLEXECUTEINFO();
+                sei.cbSize = Marshal.SizeOf(typeof(Native.SHELLEXECUTEINFO));
+                sei.fMask = 0x0000000C;   // SEE_MASK_INVOKEIDLIST：要 Shell 的详细属性页
+                sei.lpVerb = "properties";
+                sei.lpFile = path;
+                sei.nShow = 5;            // SW_SHOW
+                if (!Native.ShellExecuteEx(ref sei))
+                    Program.Log("[属性] 打开失败 " + path + " err=" + Marshal.GetLastWin32Error());
+            }
+            catch (Exception ex) { Program.Log("[属性] 异常 " + path + " : " + ex.Message); }
+        }
+
+        /// <summary>启动管理器（和覆盖层同目录的 WinQuad.Manager.exe）。</summary>
+        static void OpenManager()
+        {
+            try
+            {
+                string exe = Path.Combine(AppContext.BaseDirectory, "WinQuad.Manager.exe");
+                if (!File.Exists(exe))
+                {
+                    Program.Log("[管理器] 找不到 " + exe);
+                    MessageBox.Show("同目录下找不到 WinQuad.Manager.exe。\n\n" + exe,
+                        "WinQuad", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                { FileName = exe, WorkingDirectory = AppContext.BaseDirectory, UseShellExecute = true });
+            }
+            catch (Exception ex) { Program.Log("[管理器] 启动失败: " + ex.Message); }
         }
 
         /// <summary>把当前位置（网格坐标）写进配置文件，让下次启动停在同一格。</summary>
