@@ -49,17 +49,29 @@ namespace WinQuad.Manager
         /// 为什么用合成而不是在每处单独判断：宫格宽高、格子矩形、判定框、预览尺寸
         /// 全是从 SizeSection 算出来的。合成一份之后，所有下游代码一行都不用改，
         /// 也就不会出现「某处忘了跟随宫格行列数」这种漏网。
+        ///
+        /// ★ 格子数变了**外框不变**，让剩下的格子摊开占满：
+        ///   2×2 -> 每格 37×48（和以前一样）
+        ///   1×2 -> 每格 75×48（宽格子，长名字放得下）
+        ///   2×1 -> 每格 37×97（高格子）
         /// </summary>
         public SizeSection WithLayout(LayoutSection own)
         {
             if (own == null || (!own.Cols.HasValue && !own.Rows.HasValue)) return this;
 
+            int cols = Math.Max(1, own.Cols ?? Cols);
+            int rows = Math.Max(1, own.Rows ?? Rows);
+
+            int gc = Math.Max(1, Cols), gr = Math.Max(1, Rows);
+            int fpW = PadX * 2 + CellWidth * gc + Gap * (gc - 1);
+            int fpH = PadY * 2 + CellHeight * gr + Gap * (gr - 1);
+
             return new SizeSection
             {
-                Cols = Math.Max(1, own.Cols ?? Cols),
-                Rows = Math.Max(1, own.Rows ?? Rows),
-                CellWidth = CellWidth,
-                CellHeight = CellHeight,
+                Cols = cols,
+                Rows = rows,
+                CellWidth = Math.Max(8, (fpW - PadX * 2 - Gap * (cols - 1)) / cols),
+                CellHeight = Math.Max(8, (fpH - PadY * 2 - Gap * (rows - 1)) / rows),
                 PadX = PadX,
                 PadY = PadY,
                 Gap = Gap,

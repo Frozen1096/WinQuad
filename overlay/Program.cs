@@ -514,13 +514,38 @@ namespace WinQuad
 
         public static LayoutMetrics From(SizeSection s, LayoutSection own = null)
         {
+            // 宫格自己的行列数优先；没写就跟随总配置
+            int cols = Math.Max(1, own?.Cols ?? s.Cols);
+            int rows = Math.Max(1, own?.Rows ?? s.Rows);
+            bool custom = cols != s.Cols || rows != s.Rows;
+
+            int cw = Math.Max(8, s.CellWidth);
+            int ch = Math.Max(8, s.CellHeight);
+
+            // ★ 格子数变了，**外框尺寸不变**，让剩下的格子摊开占满。
+            //
+            // 之前是"格子大小不变、外框跟着缩"：2×2 改成 1×2 后宫格从 79 宽缩到 41 宽，
+            // 变成一条窄缝，长名字更放不下了 —— 正好和"想给长名字留位置"的意图相反。
+            // 现在外框按**总配置那套行列数**算出的标准格位保持不变，格子数少了每格就更大：
+            //   2×2 -> 每格 37×48（和以前完全一样）
+            //   1×2 -> 每格 75×48（宽格子，长名字放得下）
+            //   2×1 -> 每格 37×97（高格子）
+            if (custom)
+            {
+                int gc = Math.Max(1, s.Cols), gr = Math.Max(1, s.Rows);
+                int fpW = s.PadX * 2 + s.CellWidth * gc + s.Gap * (gc - 1);
+                int fpH = s.PadY * 2 + s.CellHeight * gr + s.Gap * (gr - 1);
+                cw = Math.Max(8, (fpW - s.PadX * 2 - s.Gap * (cols - 1)) / cols);
+                ch = Math.Max(8, (fpH - s.PadY * 2 - s.Gap * (rows - 1)) / rows);
+            }
+
             var m = new LayoutMetrics
             {
                 // 宫格自己的行列数优先；没写就跟随总配置
-                Cols = Math.Max(1, own?.Cols ?? s.Cols),
-                Rows = Math.Max(1, own?.Rows ?? s.Rows),
-                CellW = Math.Max(8, s.CellWidth),
-                CellH = Math.Max(8, s.CellHeight),
+                Cols = cols,
+                Rows = rows,
+                CellW = cw,
+                CellH = ch,
                 PadX = Math.Max(0, s.PadX),
                 PadY = Math.Max(0, s.PadY),
                 Gap = Math.Max(0, s.Gap),
