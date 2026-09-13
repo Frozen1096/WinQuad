@@ -26,21 +26,32 @@ namespace WinQuad.Manager
 
             sb.AppendLine("载入时条目数 = " + g.Items.Count);
             sb.AppendLine("载入时 col=" + g.Position.Col + " row=" + g.Position.Row);
+            sb.AppendLine("载入时 layout = "
+                + (g.Layout == null ? "(null)"
+                   : (g.Layout.Cols?.ToString() ?? "null") + " x " + (g.Layout.Rows?.ToString() ?? "null")));
 
-            // 模拟用户在界面上改了点东西
+            // 模拟用户在界面上改了点东西。
+            // 顺便测「layout 段原本不存在时能不能补出来」——
+            // 老的 group 文件都没有这一段，不补的话每宫格行列数永远存不进去。
             g.Items[0].Caption = (g.Items[0].Caption ?? "") + "!";
+            g.Layout ??= new LayoutSection();
+            g.Layout.Cols = 3;
+            g.Layout.Rows = 1;
             Cfg.SaveGroup(g);
 
             // 3) 检查结果
             string after = File.ReadAllText(path);
             bool hasComments = after.Contains("_说明");
             sb.AppendLine("保存后还有注释: " + hasComments);
+            sb.AppendLine("保存后文件里有 layout 段: " + after.Contains("\"layout\""));
 
             var g2 = Cfg.LoadGroup(fileName);
             sb.AppendLine("保存后条目数 = " + g2.Items.Count);
             sb.AppendLine("保存后格0 caption = " + g2.Items[0].Caption);
             sb.AppendLine("保存后 col=" + g2.Position.Col + " row=" + g2.Position.Row);
             sb.AppendLine("保存后格0 path = " + g2.Items[0].Path);
+            sb.AppendLine("回读 layout.cols = " + (g2.Layout?.Cols?.ToString() ?? "null") + "  (期望 3)");
+            sb.AppendLine("回读 layout.rows = " + (g2.Layout?.Rows?.ToString() ?? "null") + "  (期望 1)");
 
             // 4) 还原
             File.Copy(backup, path, true);

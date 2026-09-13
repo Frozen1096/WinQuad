@@ -52,6 +52,11 @@ namespace WinQuad.Manager
 
         // 位置只由手动拖动决定，没有锚点下拉框了
         NumericUpDown _numCol, _numRow;
+
+        // 这个宫格自己的行列数（null = 跟随总配置）
+        NumericUpDown _numCols, _numRows;
+        Button _btnShapeFollow;
+        Label _lblShapeInfo;
         Label _lblPosInfo;
         CmbPreview _preview;
 
@@ -295,6 +300,7 @@ namespace WinQuad.Manager
             // 试过 Dock 堆叠和 TableLayoutPanel，前者被 z 序坑、后者的 AutoSize 行
             // 与 Percent 行会互相冲突（实测内容比窗口还高 88px 被裁掉）。
             var host = new Panel { Dock = DockStyle.Fill, Padding = new Padding(0), AutoScroll = false };
+            _contentHost = host;
 
             // 预览高度先给个保守值，等控件拿到真实宽度后再由 SyncPreviewHeight 修正
             int gap = 6;
@@ -329,10 +335,10 @@ namespace WinQuad.Manager
         /// 这个方法内部会改控件尺寸，那些改动又会触发 host.Resize，
         /// 不做判重就会自己触发自己（实测日志被刷了上百次）。
         /// </summary>
-        void LayoutPreview(int hostW)
+        void LayoutPreview(int hostW, bool force = false)
         {
             if (_preview == null || _previewBox == null) return;
-            if (hostW == _lastLayoutW) return;
+            if (!force && hostW == _lastLayoutW) return;
             _lastLayoutW = hostW;
 
             _previewBox.Width = hostW;
@@ -342,6 +348,20 @@ namespace WinQuad.Manager
             _previewBox.Height = contentH + 26;
             _preview.Height = contentH;
         }
+
+        /// <summary>
+        /// 宫格形状（几列几行）变了之后重排预览。
+        /// 必须走强制分支 —— LayoutPreview 平时靠宽度判重防抖，
+        /// 而改行列数时宽度没变，不强制就会被直接跳过，预览框高度不跟着更新。
+        /// </summary>
+        void RelayoutPreview()
+        {
+            int w = (_contentHost != null && _contentHost.ClientSize.Width > 0)
+                ? Math.Max(80, _contentHost.ClientSize.Width)
+                : Math.Max(80, _lastLayoutW);
+            LayoutPreview(w, true);
+        }
+        Panel _contentHost;
 
         int _lastHostW = -1;
         int _lastLayoutW = -1;
@@ -598,6 +618,34 @@ namespace WinQuad.Manager
             };
             actRow.Controls.Add(btnSync);
             AddRow(t, 2, "", actRow);
+
+            // ── 这个宫格自己的形状 ──
+            // 放在「位置」组里，因为它和位置一样是**宫格级**的设置，
+            // 而上面那个「程序与外观」组里的每一行都是**选中格**的设置，两者不能混。
+            var shapeRow = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, Margin = new Padding(0) };
+            _numCols = new NumericUpDown { Width = 52, Height = 26, Minimum = 1, Maximum = 8 };
+            _numCols.ValueChanged += (s, e) => OnShapeEdited();
+            shapeRow.Controls.Add(_numCols);
+            shapeRow.Controls.Add(new Label { Text = " 列 × ", Width = 42, Height = 26, TextAlign = ContentAlignment.MiddleLeft });
+            _numRows = new NumericUpDown { Width = 52, Height = 26, Minimum = 1, Maximum = 8 };
+            _numRows.ValueChanged += (s, e) => OnShapeEdited();
+            shapeRow.Controls.Add(_numRows);
+            shapeRow.Controls.Add(new Label { Text = " 行", Width = 34, Height = 26, TextAlign = ContentAlignment.MiddleLeft });
+            _btnShapeFollow = new Button { Text = "跟随总配置", Width = 88, Height = 26, Margin = new Padding(8, 0, 0, 0) };
+            _btnShapeFollow.Click += (s, e) => SetShapeFollow();
+            shapeRow.Controls.Add(_btnShapeFollow);
+            AddRow(t, 3, "形状", shapeRow);
+
+            _lblShapeInfo = new Label
+            {
+                Dock = DockStyle.Top,
+                AutoSize = false,
+                Height = 32,
+                ForeColor = Color.DimGray,
+                Font = new Font("Microsoft YaHei UI", 8f)
+            };
+            parent.Controls.Add(_lblShapeInfo);
+            _lblShapeInfo.BringToFront();
 
             _lblPosInfo = new Label
             {
@@ -927,18 +975,7 @@ namespace WinQuad.Manager
 
         void OnGroupSelected()
         {
-            var g = Current;
-            _loading = true;
-            try
-            {
-                _itemList.Items.Clear();
-                if (g == null) { _itemList.Enabled = false; return; }
-                _itemList.Enabled = true;
-                foreach (var it in g.Items) _itemList.Items.Add(it.Caption ?? "(未命名)");
-                if (_itemList.Items.Count > 0) _itemList.SelectedIndex = 0;
-            }
-            finally { _loading = false; }
-
+            RefreshItemList();
             SyncPositionControls();
             _preview.Invalidate();
         }
@@ -1013,6 +1050,57 @@ namespace WinQuad.Manager
         GroupItem CurrentItem => _itemList != null && _itemList.SelectedIndex >= 0 && Current != null &&
                                  _itemList.SelectedIndex < Current.Items.Count
             ? Current.Items[_itemList.SelectedIndex] : null;
+
+        /// <summary>
+        /// 当前宫格实际生效的尺寸 = 总配置的尺寸 + 这个宫格自己的行列数。
+        /// 宫格宽高、判定框、预览尺寸全部从它算，保证三处永远一致。
+        /// </summary>
+        SizeSection EffectiveSize => _cfg?.Size?.WithLayout(Current?.Layout);
+
+        /// <summary>当前宫格一共几个格子（按它自己的行列数）。</summary>
+        int CellCount(GroupFile g)
+        {
+            if (g == null || _cfg?.Size == null) return 4;
+            var own = g.Layout ?? new LayoutSection();
+            return own.CellCount(_cfg.Size.Cols, _cfg.Size.Rows);
+        }
+
+        /// <summary>把 items 补够到当前行列数，多出来的留着不删（切回 2×2 还能看到）。</summary>
+        static void EnsureItemSlots(GroupFile g, int need)
+        {
+            if (g.Items == null) g.Items = new List<GroupItem>();
+            while (g.Items.Count < need) g.Items.Add(new GroupItem());
+        }
+
+        /// <summary>列表里显示的一行文字。空槽显示"(空)"，和已有的写法保持一致。</summary>
+        static string SlotLabel(GroupItem it) =>
+            (it == null || (string.IsNullOrWhiteSpace(it.Path) && string.IsNullOrWhiteSpace(it.Caption)))
+                ? "(空)" : (it.Caption ?? "(未命名)");
+
+        /// <summary>
+        /// 按当前宫格的行列数重建第三列的格子列表。
+        /// 设成 1×2 就只列两行，不再固定显示四行 —— 否则后两行点了没反应，像是坏了。
+        /// </summary>
+        void RefreshItemList()
+        {
+            var g = Current;
+            int sel = _itemList.SelectedIndex;
+            _loading = true;
+            try
+            {
+                _itemList.Items.Clear();
+                if (g == null) { _itemList.Enabled = false; return; }
+                _itemList.Enabled = true;
+
+                int n = CellCount(g);
+                EnsureItemSlots(g, n);
+                for (int i = 0; i < n; i++) _itemList.Items.Add(SlotLabel(g.Items[i]));
+
+                if (_itemList.Items.Count > 0)
+                    _itemList.SelectedIndex = Math.Max(0, Math.Min(sel, _itemList.Items.Count - 1));
+            }
+            finally { _loading = false; }
+        }
 
         void OnItemSelected()
         {
@@ -1176,9 +1264,12 @@ namespace WinQuad.Manager
             var g = Current;
             if (g == null) { MessageBox.Show("请先选择一个四宫格。", "WinQuad 管理器"); return; }
 
-            int cap = _cfg.Size.Cols * _cfg.Size.Rows;
+            // 容量看**这个宫格自己的**行列数，不是总配置的
+            int cap = CellCount(g);
             int filled = FilledCount(g);
             int added = 0, skippedFull = 0, skippedMissing = 0, lastSlot = -1;
+
+            EnsureItemSlots(g, cap);
 
             foreach (var f in files)
             {
@@ -1189,15 +1280,20 @@ namespace WinQuad.Manager
                 PathResolver.Upgrade(it);                  // 快捷方式自动追溯成真正的 exe
                 it.Caption = SuggestCaption(it.Path);
 
-                // 优先填进空占位格，而不是无脑追加 —— 否则列表会越拉越长
-                int slot = g.Items.FindIndex(IsEmpty);
-                if (slot >= 0) { g.Items[slot] = it; _itemList.Items[slot] = it.Caption; lastSlot = slot; }
-                else { g.Items.Add(it); _itemList.Items.Add(it.Caption); lastSlot = g.Items.Count - 1; }
+                // 只在当前宫格的格子范围内找空位，不往容量外追加
+                int slot = -1;
+                for (int k = 0; k < cap && k < g.Items.Count; k++)
+                    if (IsEmpty(g.Items[k])) { slot = k; break; }
+
+                if (slot < 0) { skippedFull++; continue; }
+                g.Items[slot] = it;
+                lastSlot = slot;
                 added++;
             }
 
             if (added > 0)
             {
+                RefreshItemList();
                 if (lastSlot >= 0 && lastSlot < _itemList.Items.Count)
                     _itemList.SelectedIndex = lastSlot;
                 MarkDirty();
@@ -1286,24 +1382,16 @@ namespace WinQuad.Manager
 
         /// <summary>
         /// 移除选中格的内容。
-        /// 对"空占位行"直接移除该行（避免空行越积越多）；
-        /// 对已填的行则清空其内容，保持格子总数与宫格的 4 格结构一致。
+        /// 现在一律"清空该格"而不是把这一行删掉 —— 格子数由宫格的行列数决定，
+        /// 删行会让列表短于宫格形状。空出来的行显示 "(空)"，宫格上就是一块透明区域。
         /// </summary>
         void DeleteItem()
         {
             var g = Current; int i = _itemList.SelectedIndex;
             if (g == null || i < 0 || i >= g.Items.Count) return;
 
-            if (IsEmpty(g.Items[i]))
-            {
-                g.Items.RemoveAt(i);
-                _itemList.Items.RemoveAt(i);
-            }
-            else
-            {
-                g.Items[i] = new GroupItem();
-                _itemList.Items[i] = "(空)";
-            }
+            g.Items[i] = new GroupItem();
+            RefreshItemList();
 
             if (_itemList.Items.Count > 0)
                 _itemList.SelectedIndex = Math.Min(i, _itemList.Items.Count - 1);
@@ -1319,10 +1407,10 @@ namespace WinQuad.Manager
             var g = Current; int i = _itemList.SelectedIndex;
             if (g == null || i < 0) return;
             int j = i + d;
-            if (j < 0 || j >= g.Items.Count) return;
+            // 上界用当前宫格的格子数，不能换到被行列数藏起来的槽位里去
+            if (j < 0 || j >= CellCount(g) || j >= g.Items.Count) return;
 
             var tmp = g.Items[i]; g.Items[i] = g.Items[j]; g.Items[j] = tmp;
-            object o = _itemList.Items[i]; _itemList.Items[i] = _itemList.Items[j]; _itemList.Items[j] = o;
 
             RefreshRowCaptions();
             _loading = true; _itemList.SelectedIndex = j; _loading = false;
@@ -1336,7 +1424,7 @@ namespace WinQuad.Manager
             var g = Current;
             if (g == null) return;
             for (int k = 0; k < _itemList.Items.Count && k < g.Items.Count; k++)
-                _itemList.Items[k] = IsEmpty(g.Items[k]) ? "(空)" : (g.Items[k].Caption ?? "(未命名)");
+                _itemList.Items[k] = SlotLabel(g.Items[k]);
         }
 
         void BrowsePath()
@@ -1554,9 +1642,93 @@ namespace WinQuad.Manager
             {
                 _numCol.Value = ClampNum(p.Col, 0, 999);
                 _numRow.Value = ClampNum(p.Row, 0, 999);
+                SyncShapeControls(g);
             }
             finally { _loading = false; }
+            UpdateShapeInfo();
             UpdatePosInfo();
+        }
+
+        /// <summary>把「形状」三个控件刷成当前宫格的值。</summary>
+        void SyncShapeControls(GroupFile g)
+        {
+            var own = g?.Layout ?? new LayoutSection();
+            int gc = _cfg?.Size?.Cols ?? 2;
+            int gr = _cfg?.Size?.Rows ?? 2;
+
+            _numCols.Value = Math.Max(1, Math.Min(8, own.Cols ?? gc));
+            _numRows.Value = Math.Max(1, Math.Min(8, own.Rows ?? gr));
+        }
+
+        /// <summary>
+        /// 用户改了行列数。写进**这个宫格自己的** layout，
+        /// 不去动总配置 —— 别的宫格不受影响。
+        /// </summary>
+        void OnShapeEdited()
+        {
+            if (_loading) return;
+            var g = Current;
+            if (g == null) return;
+
+            g.Layout ??= new LayoutSection();
+            g.Layout.Cols = (int)_numCols.Value;
+            g.Layout.Rows = (int)_numRows.Value;
+
+            RefreshItemList();
+            UpdateShapeInfo();
+            MarkDirty();
+            _preview.Invalidate();
+            RelayoutPreview();
+        }
+
+        /// <summary>把这一宫格的行列数清空，改回跟随总配置。</summary>
+        void SetShapeFollow()
+        {
+            var g = Current;
+            if (g == null) return;
+
+            g.Layout ??= new LayoutSection();
+            g.Layout.Cols = null;
+            g.Layout.Rows = null;
+
+            _loading = true;
+            try { SyncShapeControls(g); } finally { _loading = false; }
+
+            RefreshItemList();
+            UpdateShapeInfo();
+            MarkDirty();
+            _preview.Invalidate();
+            RelayoutPreview();
+        }
+
+        /// <summary>刷新「形状」下面那行说明：现在是自己定还是跟随总配置。</summary>
+        void UpdateShapeInfo()
+        {
+            if (_lblShapeInfo == null || _btnShapeFollow == null) return;
+
+            var g = Current;
+            int gc = _cfg?.Size?.Cols ?? 2;
+            int gr = _cfg?.Size?.Rows ?? 2;
+            var own = g?.Layout;
+            bool follow = own == null || (!own.Cols.HasValue && !own.Rows.HasValue);
+
+            var eff = EffectiveSize;
+            string size = (eff != null) ? ("　实际 " + eff.Width + " × " + eff.Height
+                                           + "　判定框 " + eff.FootprintWidth + " × " + eff.FootprintHeight)
+                                        : "";
+
+            if (follow)
+            {
+                _btnShapeFollow.Text = "改为单独设置";
+                _lblShapeInfo.Text = "跟随总配置（" + gc + " 列 × " + gr + " 行）—— 改总配置时这一格会跟着变。" + size;
+                _lblShapeInfo.ForeColor = Color.FromArgb(0, 100, 170);
+            }
+            else
+            {
+                _btnShapeFollow.Text = "改回跟随总配置";
+                _lblShapeInfo.Text = "本宫格单独设置 —— 只影响这一个，别的宫格不变。" + size;
+                _lblShapeInfo.ForeColor = Color.FromArgb(170, 90, 0);
+            }
         }
 
         static decimal ClampNum(int v, int lo, int hi) =>
@@ -1777,7 +1949,7 @@ namespace WinQuad.Manager
             public int ContentHeight()
             {
                 var main = FindForm() as MainForm;
-                return PreviewPainter.ContentHeight(main?._cfg?.Size, FixedScale);
+                return PreviewPainter.ContentHeight(main?.EffectiveSize, FixedScale);
             }
 
             protected override void OnPaint(PaintEventArgs e)
@@ -1787,18 +1959,21 @@ namespace WinQuad.Manager
                 var grp = main?.Current;
                 if (cfg == null || grp == null) return;
 
+                var size = main.EffectiveSize;   // 总配置 + 这个宫格自己的行列数
+
                 // 只在控件尺寸或画面尺寸变化时记录一次，避免重绘刷屏
                 string sig = ClientSize.Width + "x" + ClientSize.Height + "/"
-                           + cfg.Size.Width + "x" + cfg.Size.Height;
+                           + size.Width + "x" + size.Height;
                 if (main._lastPreviewSig != sig)
                 {
                     main._lastPreviewSig = sig;
                     Cfg.Log("[预览] 控件=" + ClientSize.Width + "x" + ClientSize.Height
-                            + " 宫格=" + cfg.Size.Width + "x" + cfg.Size.Height
+                            + " 宫格=" + size.Width + "x" + size.Height
+                            + " (" + size.Cols + "列x" + size.Rows + "行)"
                             + " 放大=" + FixedScale.ToString("0.#"));
                 }
 
-                PreviewPainter.DrawGrid(e.Graphics, ClientSize, cfg.Size, cfg.Style,
+                PreviewPainter.DrawGrid(e.Graphics, ClientSize, size, cfg.Style,
                                         grp.Items, FixedScale);
             }
 
@@ -1814,7 +1989,7 @@ namespace WinQuad.Manager
                 using (var g = Graphics.FromImage(bmp))
                 {
                     g.Clear(Color.FromArgb(70, 80, 100));
-                    PreviewPainter.DrawGrid(g, bmp.Size, cfg.Size, cfg.Style, grp.Items, FixedScale);
+                    PreviewPainter.DrawGrid(g, bmp.Size, main.EffectiveSize, cfg.Style, grp.Items, FixedScale);
                 }
                 return bmp;
             }

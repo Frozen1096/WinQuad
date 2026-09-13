@@ -427,8 +427,19 @@ namespace WinQuad
     {
         [JsonPropertyName("name")] public string Name { get; set; }
         [JsonPropertyName("position")] public PositionSection Position { get; set; } = new PositionSection();
+        [JsonPropertyName("layout")] public LayoutSection Layout { get; set; }
         [JsonPropertyName("defaults")] public DefaultsSection Defaults { get; set; } = new DefaultsSection();
         [JsonPropertyName("items")] public List<GroupItem> Items { get; set; } = new List<GroupItem>();
+    }
+
+    /// <summary>
+    /// 单个宫格自己的行列数。两个都留空（null）就跟随总配置 config.json 的 size.cols / size.rows。
+    /// 有了它，一个宫格可以是 2×2，另一个是 1×2 或 2×1，互不影响。
+    /// </summary>
+    internal sealed class LayoutSection
+    {
+        [JsonPropertyName("cols")] public int? Cols { get; set; }
+        [JsonPropertyName("rows")] public int? Rows { get; set; }
     }
 
     internal sealed class PositionSection
@@ -501,12 +512,13 @@ namespace WinQuad
             if (b.CollisionH >= 8 && b.CollisionH <= 200) CollisionH = b.CollisionH;
         }
 
-        public static LayoutMetrics From(SizeSection s)
+        public static LayoutMetrics From(SizeSection s, LayoutSection own = null)
         {
             var m = new LayoutMetrics
             {
-                Cols = Math.Max(1, s.Cols),
-                Rows = Math.Max(1, s.Rows),
+                // 宫格自己的行列数优先；没写就跟随总配置
+                Cols = Math.Max(1, own?.Cols ?? s.Cols),
+                Rows = Math.Max(1, own?.Rows ?? s.Rows),
                 CellW = Math.Max(8, s.CellWidth),
                 CellH = Math.Max(8, s.CellHeight),
                 PadX = Math.Max(0, s.PadX),
@@ -631,7 +643,7 @@ namespace WinQuad
             _cfg = cfg;
             _grp = grp;
             _groupPath = groupPath;
-            _m = LayoutMetrics.From(cfg.Size);
+            _m = LayoutMetrics.From(cfg.Size, grp.Layout);
 
             RebuildFont();
 
@@ -1088,6 +1100,12 @@ namespace WinQuad
                 var item = items[i];
                 if (item == null) continue;
 
+                // 空置的格子**什么都不画** —— 底色、边框、图标、文字全部跳过，整块透出桌面。
+                // 之前是"空格子只画底板"，于是 2×2 里空的那两格仍然顶着两块半透明底，
+                // 看着像四个格子却只有两个能用。现在没放程序的位置就是彻底不存在。
+                // 注意：窗口区域（SetWindowRgn）仍然覆盖整块，这样最外圈的拖动环在哪都能拖。
+                if (string.IsNullOrWhiteSpace(item.Path)) continue;
+
                 var cell = cellRect(i);
                 bool hot = i == hoverCell && !hoverRing;
 
@@ -1110,9 +1128,6 @@ namespace WinQuad
                     using (var pen = new Pen(WithAlpha(ToColorSafe(st.BorderColor, 255), ba), hot ? 1.2f : 1f))
                         g.DrawPath(pen, path);
                 }
-
-                // 空格子只画底板
-                if (string.IsNullOrWhiteSpace(item.Path)) continue;
 
                 int blockH = m.IconSize + 1 + m.LabelH;
                 int top = cell.Y + Math.Max(0, (cell.Height - blockH) / 2);

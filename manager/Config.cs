@@ -42,6 +42,33 @@ namespace WinQuad.Manager
         [JsonIgnore] public int Height => PadY * 2 + CellHeight * Rows + Gap * (Rows - 1);
         [JsonIgnore] public int FootprintWidth => Width + Bleed * 2;
         [JsonIgnore] public int FootprintHeight => Height + Bleed * 2;
+
+        /// <summary>
+        /// 把总配置的尺寸和某个宫格自己的行列数合成一份「实际生效」的尺寸。
+        ///
+        /// 为什么用合成而不是在每处单独判断：宫格宽高、格子矩形、判定框、预览尺寸
+        /// 全是从 SizeSection 算出来的。合成一份之后，所有下游代码一行都不用改，
+        /// 也就不会出现「某处忘了跟随宫格行列数」这种漏网。
+        /// </summary>
+        public SizeSection WithLayout(LayoutSection own)
+        {
+            if (own == null || (!own.Cols.HasValue && !own.Rows.HasValue)) return this;
+
+            return new SizeSection
+            {
+                Cols = Math.Max(1, own.Cols ?? Cols),
+                Rows = Math.Max(1, own.Rows ?? Rows),
+                CellWidth = CellWidth,
+                CellHeight = CellHeight,
+                PadX = PadX,
+                PadY = PadY,
+                Gap = Gap,
+                IconSize = IconSize,
+                LabelHeight = LabelHeight,
+                RingSize = RingSize,
+                Bleed = Bleed
+            };
+        }
     }
 
     internal sealed class StyleSection
@@ -108,10 +135,31 @@ namespace WinQuad.Manager
     {
         [JsonPropertyName("name")] public string Name { get; set; }
         [JsonPropertyName("position")] public PositionSection Position { get; set; } = new PositionSection();
+        [JsonPropertyName("layout")] public LayoutSection Layout { get; set; } = new LayoutSection();
         [JsonPropertyName("defaults")] public DefaultsSection Defaults { get; set; } = new DefaultsSection();
         [JsonPropertyName("items")] public List<GroupItem> Items { get; set; } = new List<GroupItem>();
 
         [JsonIgnore] public string FilePath { get; set; }
+    }
+
+    /// <summary>
+    /// 单个宫格自己的行列数。两个都留空（null）就跟随总配置 config.json 的 size.cols / size.rows。
+    /// 有了它，一个宫格可以是 2×2，另一个是 1×2 或 2×1，互不影响。
+    /// </summary>
+    internal sealed class LayoutSection
+    {
+        [JsonPropertyName("cols")] public int? Cols { get; set; }
+        [JsonPropertyName("rows")] public int? Rows { get; set; }
+
+        /// <summary>算出这个宫格实际用几行几列。own 为空就回退到总配置。</summary>
+        public int EffectiveCols(int globalCols) =>
+            Math.Max(1, Cols ?? globalCols);
+        public int EffectiveRows(int globalRows) =>
+            Math.Max(1, Rows ?? globalRows);
+
+        /// <summary>这个宫格一共几个格子。</summary>
+        public int CellCount(int globalCols, int globalRows) =>
+            EffectiveCols(globalCols) * EffectiveRows(globalRows);
     }
 
     internal sealed class PositionSection
@@ -358,13 +406,36 @@ namespace WinQuad.Manager
 
         /// <summary>
         /// 把 `"section": { ... }` 里 `"key": 值` 的值部分换掉，其余字节原样保留。
-        /// 找不到就原样返回（字段可能被用户删了，不算错误）。
+        /// 段或字段不存在时会补出来，所以程序新加的配置项在旧文件上也存得进去。
         /// </summary>
         static string SetValue(string json, string section, string key, string literal)
         {
             string sk = "\"" + section + "\"";
             int k = json.IndexOf(sk, StringComparison.Ordinal);
-            if (k < 0) return json;
+
+            // 整段都不存在 —— 补一段出来。
+            // 场景：group 文件原本没有 layout 段，程序新加了每宫格行列数，
+            // 不补的话这个设置永远存不进去。
+            if (k < 0)
+            {
+                int rootEnd = json.LastIndexOf('}');
+                if (rootEnd < 0) return json;
+
+                // 找根对象里最后一个属性的结尾字符，判断要不要补逗号
+                int last = rootEnd - 1;
+                while (last > 0 && char.IsWhiteSpace(json[last])) last--;
+                bool needComma = last >= 0 && json[last] != ',' && json[last] != '{';
+
+                string nl = json.Contains("\r\n") ? "\r\n" : "\n";
+                string head = json.Substring(0, last + 1);
+                string tail = json.Substring(last + 1);
+                if (needComma) head += ",";
+                head += nl + "  \"" + section + "\": {" + nl
+                             + "    \"" + key + "\": " + literal + nl
+                             + "  }";
+                return head + tail;
+            }
+
             int open = json.IndexOf('{', k + sk.Length);
             if (open < 0) return json;
 
@@ -518,6 +589,16 @@ namespace WinQuad.Manager
                     json = ReplaceNum(json, "y", g.Position.Y);
                 }
 
+                // layout.cols / layout.rows：null 要能写回去（表示"跟随总配置"）。
+                // 段落或字段不存在时会自动补出来，所以老 group 文件也能就地升级。
+                if (g.Layout != null)
+                {
+                    json = SetValue(json, "layout", "cols",
+                        g.Layout.Cols.HasValue ? g.Layout.Cols.Value.ToString() : "null");
+                    json = SetValue(json, "layout", "rows",
+                        g.Layout.Rows.HasValue ? g.Layout.Rows.Value.ToString() : "null");
+                }
+
                 string itemsJson = BuildItemsArray(g.Items);
                 string replaced = ReplaceArray(json, "\"items\"", itemsJson);
                 return replaced ?? json;   // 找不到 items 数组就只更新位置
@@ -579,6 +660,11 @@ namespace WinQuad.Manager
                     t = ReplaceNum(t, "x", g.Position.X);
                     t = ReplaceNum(t, "y", g.Position.Y);
                 }
+
+                t = SetValue(t, "layout", "cols",
+                    g.Layout?.Cols.HasValue == true ? g.Layout.Cols.Value.ToString() : "null");
+                t = SetValue(t, "layout", "rows",
+                    g.Layout?.Rows.HasValue == true ? g.Layout.Rows.Value.ToString() : "null");
 
                 return ReplaceArray(t, "\"items\"", BuildItemsArray(g.Items));
             }
@@ -684,6 +770,14 @@ namespace WinQuad.Manager
     ""_x说明"": ""屏幕像素横坐标。由 col 换算而来，仅供人肉核对。"",
     ""y"": -2147483648,
     ""_y说明"": ""屏幕像素纵坐标。由 row 换算而来，仅供人肉核对。""
+  },
+
+  ""layout"": {
+    ""_说明"": ""本宫格自己的形状（几列几行）。两个都填 null 就跟随总配置 config.json 的 size.cols / size.rows。改成 1 列 2 行就是竖着一条，2 列 1 行就是横着一条。"",
+    ""cols"": null,
+    ""_cols说明"": ""★ 列数 1~8。null = 跟随总配置。"",
+    ""rows"": null,
+    ""_rows说明"": ""★ 行数 1~8。null = 跟随总配置。""
   },
 
   ""defaults"": {
