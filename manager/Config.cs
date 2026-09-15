@@ -44,6 +44,14 @@ namespace WinQuad.Manager
         [JsonIgnore] public int FootprintHeight => Height + Bleed * 2;
 
         /// <summary>
+        /// 自动等比的缩放系数。以总配置的单格尺寸为基准，
+        /// 取宽高两个比例里**较小**的那个 —— 保证"几个字正好放满"这个关系不变，
+        /// 放大后不会反而少显示一个字。
+        /// 只有 WithLayout 合成出来的那份会不是 1。
+        /// </summary>
+        [JsonIgnore] public float FontScale { get; set; } = 1f;
+
+        /// <summary>
         /// 把总配置的尺寸和某个宫格自己的行列数合成一份「实际生效」的尺寸。
         ///
         /// 为什么用合成而不是在每处单独判断：宫格宽高、格子矩形、判定框、预览尺寸
@@ -85,20 +93,34 @@ namespace WinQuad.Manager
                 Math.Max(8, (fpH - PadY * 2 - Gap * (rows - 1)) / rows));
         }
 
-        SizeSection Copy(int cols, int rows, int cw, int ch) => new SizeSection
+        SizeSection Copy(int cols, int rows, int cw, int ch)
         {
-            Cols = cols,
-            Rows = rows,
-            CellWidth = cw,
-            CellHeight = ch,
-            PadX = PadX,
-            PadY = PadY,
-            Gap = Gap,
-            IconSize = IconSize,
-            LabelHeight = LabelHeight,
-            RingSize = RingSize,
-            Bleed = Bleed
-        };
+            // 自动等比：以**总配置的单格尺寸**为基准，取宽高比例里较小的那个。
+            // 用较小值是有讲究的 —— 基准 37px 宽正好放 3 个汉字，
+            // 按宽度比例放大会让"3 个字正好放满"这个关系保持不变；
+            // 若按高度比例放大，字号涨过头反而少显示一个字。
+            double sw = (double)cw / Math.Max(1, CellWidth);
+            double sh = (double)ch / Math.Max(1, CellHeight);
+            double sc = Math.Min(sw, sh);
+            if (sc < 1) sc = 1;                    // 变小不缩，只放大
+            if (sc > 6) sc = 6;                    // 上限，防手滑填个大数字搞出巨型字体
+
+            return new SizeSection
+            {
+                Cols = cols,
+                Rows = rows,
+                CellWidth = cw,
+                CellHeight = ch,
+                IconSize = Math.Max(4, (int)Math.Round(IconSize * sc)),
+                LabelHeight = Math.Max(0, (int)Math.Round(LabelHeight * sc)),
+                FontScale = (float)sc,
+                PadX = PadX,
+                PadY = PadY,
+                Gap = Gap,
+                RingSize = RingSize,
+                Bleed = Bleed
+            };
+        }
     }
 
     internal sealed class StyleSection

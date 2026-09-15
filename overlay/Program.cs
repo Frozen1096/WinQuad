@@ -503,6 +503,12 @@ namespace WinQuad
         public int Cols, Rows, CellW, CellH, IconSize, LabelH, PadX, PadY, Gap, W, H, RingSize, Bleed;
 
         /// <summary>
+        /// 自动等比的缩放系数，由 From() 算出来。字号用它乘总配置的字号。
+        /// 单格尺寸就等于总配置时是 1。
+        /// </summary>
+        public double Scale = 1.0;
+
+        /// <summary>
         /// 桌面图标网格间距（像素）。启动时由 config.json 的 behaviour 段注入。
         /// 本机实测是 83×114，但各机器可能不同（取决于图标大小与"图标间距"设置），
         /// 所以做成可配置 + 可用 --detect 自动探测。
@@ -583,6 +589,21 @@ namespace WinQuad
                 RingSize = Math.Max(1, s.RingSize),
                 Bleed = Math.Max(0, s.Bleed)
             };
+
+            // ── 自动等比 ──
+            // 以**总配置的单格尺寸**为基准，取宽高比例里较小的那个。
+            // 用较小值是有讲究的：基准 37px 宽正好放 3 个汉字，
+            // 按宽度比例放大会让"3 个字正好放满"这个关系保持不变；
+            // 若按高度比例放大，字号涨过头反而会少显示一个字。
+            double sw = (double)cw / Math.Max(1, s.CellWidth);
+            double sh = (double)ch / Math.Max(1, s.CellHeight);
+            double sc = Math.Min(sw, sh);
+            if (sc < 1) sc = 1;        // 变小不缩，只放大
+            if (sc > 6) sc = 6;        // 上限，防手滑填个大数字搞出巨型字体
+            m.Scale = sc;
+            m.IconSize = Math.Max(4, (int)Math.Round(m.IconSize * sc));
+            m.LabelH = Math.Max(0, (int)Math.Round(m.LabelH * sc));
+
             m.W = m.PadX * 2 + m.CellW * m.Cols + m.Gap * (m.Cols - 1);
             m.H = m.PadY * 2 + m.CellH * m.Rows + m.Gap * (m.Rows - 1);
             return m;
@@ -734,15 +755,18 @@ namespace WinQuad
         void RebuildFont()
         {
             _labelFont?.Dispose();
+            // 字号跟着格子等比放大（见 LayoutMetrics.From 里的自动等比）
+            float pt = (float)(_cfg.Style.FontSizePt * _m.Scale);
+            if (pt < 1f) pt = 1f;
             try
             {
-                _labelFont = new Font(_cfg.Style.FontFamily, _cfg.Style.FontSizePt,
+                _labelFont = new Font(_cfg.Style.FontFamily, pt,
                     _cfg.Style.FontBold ? FontStyle.Bold : FontStyle.Regular, GraphicsUnit.Point);
             }
             catch
             {
                 Program.Log("[警告] 字体 '" + _cfg.Style.FontFamily + "' 不可用，退回微软雅黑");
-                _labelFont = new Font("Microsoft YaHei UI", _cfg.Style.FontSizePt,
+                _labelFont = new Font("Microsoft YaHei UI", pt,
                     FontStyle.Regular, GraphicsUnit.Point);
             }
         }

@@ -146,7 +146,7 @@ namespace WinQuad.Manager
                     ico.Dispose();
                 }
 
-                DrawOutlinedText(g, item.Caption ?? "", labelBox, Safe(st.TextColor), st);
+                DrawOutlinedText(g, item.Caption ?? "", labelBox, Safe(st.TextColor), st, s.FontScale);
             }
         }
 
@@ -189,12 +189,16 @@ namespace WinQuad.Manager
         /// 则会退化成灰度抗锯齿，颜色干净，而字符度量完全不变。
         /// 样式由调用方传入，不反查窗体。
         /// </summary>
-        public static void DrawOutlinedText(Graphics g, string text, Rectangle box, Color color, StyleSection st)
+        public static void DrawOutlinedText(Graphics g, string text, Rectangle box, Color color, StyleSection st,
+                                            float fontScale = 1f)
         {
             if (string.IsNullOrEmpty(text)) return;
 
             Font f;
-            float pt = st?.FontSizePt ?? 7f;
+            // 字号跟着格子等比放大（见 SizeSection.WithLayout 里的自动等比）。
+            // 缩放系数取宽高比例里较小的那个，所以"几个字正好放满"这个关系不会变。
+            if (fontScale <= 0f) fontScale = 1f;
+            float pt = (st?.FontSizePt ?? 7f) * fontScale;
             try { f = new Font(st?.FontFamily ?? "Microsoft YaHei UI", pt, FontStyle.Regular); }
             catch { f = new Font("Microsoft YaHei UI", pt); }
 
