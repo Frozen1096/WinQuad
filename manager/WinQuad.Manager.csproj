@@ -14,10 +14,10 @@
     <ApplicationIcon>..\assets\icon.ico</ApplicationIcon>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
 
-    <!-- v0.1：公开测试初版，给朋友试用的 -->
-    <Version>0.1.0</Version>
-    <FileVersion>0.1.0.0</FileVersion>
-    <AssemblyVersion>0.1.0.0</AssemblyVersion>
+    <!-- v0.2：每个宫格可单独设占地与形状、自动等比、文字投影、右键快捷方式操作 -->
+    <Version>0.2.0</Version>
+    <FileVersion>0.2.0.0</FileVersion>
+    <AssemblyVersion>0.2.0.0</AssemblyVersion>
     <Product>WinQuad —— Windows 桌面四宫格</Product>
     <Description>WinQuad 管理器：给四宫格一个图形界面。</Description>
     <Company>Frozen1096</Company>
