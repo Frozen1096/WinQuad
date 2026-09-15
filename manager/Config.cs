@@ -50,37 +50,55 @@ namespace WinQuad.Manager
         /// 全是从 SizeSection 算出来的。合成一份之后，所有下游代码一行都不用改，
         /// 也就不会出现「某处忘了跟随宫格行列数」这种漏网。
         ///
-        /// ★ 格子数变了**外框不变**，让剩下的格子摊开占满：
-        ///   2×2 -> 每格 37×48（和以前一样）
-        ///   1×2 -> 每格 75×48（宽格子，长名字放得下）
-        ///   2×1 -> 每格 37×97（高格子）
+        /// ★ 两种定尺寸的方式，优先用「占地」：
+        ///   ① 指定了 footprintCols/Rows —— 外框 = 占用格数 × 图标格距，
+        ///      再让出 bleed 使"外框 + bleed"正好是整数个图标格。格子把外框等分。
+        ///   ② 没指定 —— 外框按总配置那套行列数算出的"标准格位"，格子数少了每格摊开：
+        ///      2×2 -> 37×48（和以前一样）／1×2 -> 75×48（宽格子）／2×1 -> 37×97（高格子）
         /// </summary>
-        public SizeSection WithLayout(LayoutSection own)
+        public SizeSection WithLayout(LayoutSection own, int stepX = 83, int stepY = 114)
         {
-            if (own == null || (!own.Cols.HasValue && !own.Rows.HasValue)) return this;
+            if (own == null) return this;
 
             int cols = Math.Max(1, own.Cols ?? Cols);
             int rows = Math.Max(1, own.Rows ?? Rows);
+            bool customCells = cols != Cols || rows != Rows;
+
+            if (own.HasFootprint)
+            {
+                stepX = stepX > 0 ? stepX : 83;
+                stepY = stepY > 0 ? stepY : 114;
+                int W = Math.Max(16, own.FootprintCols.Value * stepX - Bleed * 2);
+                int H = Math.Max(16, own.FootprintRows.Value * stepY - Bleed * 2);
+                return Copy(cols, rows,
+                    Math.Max(8, (W - PadX * 2 - Gap * (cols - 1)) / cols),
+                    Math.Max(8, (H - PadY * 2 - Gap * (rows - 1)) / rows));
+            }
+
+            if (!customCells) return this;
 
             int gc = Math.Max(1, Cols), gr = Math.Max(1, Rows);
             int fpW = PadX * 2 + CellWidth * gc + Gap * (gc - 1);
             int fpH = PadY * 2 + CellHeight * gr + Gap * (gr - 1);
-
-            return new SizeSection
-            {
-                Cols = cols,
-                Rows = rows,
-                CellWidth = Math.Max(8, (fpW - PadX * 2 - Gap * (cols - 1)) / cols),
-                CellHeight = Math.Max(8, (fpH - PadY * 2 - Gap * (rows - 1)) / rows),
-                PadX = PadX,
-                PadY = PadY,
-                Gap = Gap,
-                IconSize = IconSize,
-                LabelHeight = LabelHeight,
-                RingSize = RingSize,
-                Bleed = Bleed
-            };
+            return Copy(cols, rows,
+                Math.Max(8, (fpW - PadX * 2 - Gap * (cols - 1)) / cols),
+                Math.Max(8, (fpH - PadY * 2 - Gap * (rows - 1)) / rows));
         }
+
+        SizeSection Copy(int cols, int rows, int cw, int ch) => new SizeSection
+        {
+            Cols = cols,
+            Rows = rows,
+            CellWidth = cw,
+            CellHeight = ch,
+            PadX = PadX,
+            PadY = PadY,
+            Gap = Gap,
+            IconSize = IconSize,
+            LabelHeight = LabelHeight,
+            RingSize = RingSize,
+            Bleed = Bleed
+        };
     }
 
     internal sealed class StyleSection
@@ -155,13 +173,28 @@ namespace WinQuad.Manager
     }
 
     /// <summary>
-    /// 单个宫格自己的行列数。两个都留空（null）就跟随总配置 config.json 的 size.cols / size.rows。
-    /// 有了它，一个宫格可以是 2×2，另一个是 1×2 或 2×1，互不影响。
+    /// 单个宫格自己的形状与占地。全部留空（null）就跟随总配置 config.json 的
+    /// size.cols / size.rows，且外框按标准格位算。
+    ///
+    /// 两层是**独立**的：
+    ///   · FootprintCols/Rows —— 宫格**占几个桌面图标格**（每格 = 图标格距 83×114）。
+    ///     这就是"不局限于一个图标的宽度"。
+    ///   · Cols/Rows —— 宫格**里面装几列几行格子**。
+    ///
+    /// 所以可以"占 2×2 个图标格，里面放 3×3 共 9 个格子"。
     /// </summary>
     internal sealed class LayoutSection
     {
+        [JsonPropertyName("footprintCols")] public int? FootprintCols { get; set; }
+        [JsonPropertyName("footprintRows")] public int? FootprintRows { get; set; }
         [JsonPropertyName("cols")] public int? Cols { get; set; }
         [JsonPropertyName("rows")] public int? Rows { get; set; }
+
+        /// <summary>有没有指定占地。指定了才走"按图标格算外框"那条路。</summary>
+        [JsonIgnore]
+        public bool HasFootprint =>
+            FootprintCols.HasValue && FootprintRows.HasValue &&
+            FootprintCols.Value > 0 && FootprintRows.Value > 0;
 
         /// <summary>算出这个宫格实际用几行几列。own 为空就回退到总配置。</summary>
         public int EffectiveCols(int globalCols) =>
@@ -601,10 +634,14 @@ namespace WinQuad.Manager
                     json = ReplaceNum(json, "y", g.Position.Y);
                 }
 
-                // layout.cols / layout.rows：null 要能写回去（表示"跟随总配置"）。
+                // layout.*：null 要能写回去（表示"跟随总配置"／"自动占地"）。
                 // 段落或字段不存在时会自动补出来，所以老 group 文件也能就地升级。
                 if (g.Layout != null)
                 {
+                    json = SetValue(json, "layout", "footprintCols",
+                        g.Layout.FootprintCols.HasValue ? g.Layout.FootprintCols.Value.ToString() : "null");
+                    json = SetValue(json, "layout", "footprintRows",
+                        g.Layout.FootprintRows.HasValue ? g.Layout.FootprintRows.Value.ToString() : "null");
                     json = SetValue(json, "layout", "cols",
                         g.Layout.Cols.HasValue ? g.Layout.Cols.Value.ToString() : "null");
                     json = SetValue(json, "layout", "rows",
@@ -673,6 +710,10 @@ namespace WinQuad.Manager
                     t = ReplaceNum(t, "y", g.Position.Y);
                 }
 
+                t = SetValue(t, "layout", "footprintCols",
+                    g.Layout?.FootprintCols.HasValue == true ? g.Layout.FootprintCols.Value.ToString() : "null");
+                t = SetValue(t, "layout", "footprintRows",
+                    g.Layout?.FootprintRows.HasValue == true ? g.Layout.FootprintRows.Value.ToString() : "null");
                 t = SetValue(t, "layout", "cols",
                     g.Layout?.Cols.HasValue == true ? g.Layout.Cols.Value.ToString() : "null");
                 t = SetValue(t, "layout", "rows",
@@ -785,11 +826,15 @@ namespace WinQuad.Manager
   },
 
   ""layout"": {
-    ""_说明"": ""本宫格自己的形状（几列几行）。两个都填 null 就跟随总配置 config.json 的 size.cols / size.rows。改成 1 列 2 行就是竖着一条，2 列 1 行就是横着一条。"",
+    ""_说明"": ""本宫格自己的占地与形状。两层是独立的：footprintCols/Rows 决定宫格**占几个桌面图标格**（每格 = 图标格距 83×114），cols/rows 决定宫格**里面装几列几行格子**。"",
+    ""footprintCols"": null,
+    ""_footprintCols说明"": ""★ 宫格占几个图标格宽。null = 自动（按总配置的标准格位算）。填 2 就是横着占两格，可以放更多格子。"",
+    ""footprintRows"": null,
+    ""_footprintRows说明"": ""★ 宫格占几个图标格高。null = 自动。"",
     ""cols"": null,
-    ""_cols说明"": ""★ 列数 1~8。null = 跟随总配置。"",
+    ""_cols说明"": ""★ 里面装几列格子，1~8。null = 跟随总配置 size.cols。想「占 2×2 个图标格、里面放 3×3」就把这个设成 3、rows 也设成 3。"",
     ""rows"": null,
-    ""_rows说明"": ""★ 行数 1~8。null = 跟随总配置。""
+    ""_rows说明"": ""★ 里面装几行格子，1~8。null = 跟随总配置 size.rows。""
   },
 
   ""defaults"": {

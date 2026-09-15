@@ -53,9 +53,9 @@ namespace WinQuad.Manager
         // 位置只由手动拖动决定，没有锚点下拉框了
         NumericUpDown _numCol, _numRow;
 
-        // 这个宫格自己的行列数（null = 跟随总配置）
-        NumericUpDown _numCols, _numRows;
-        Button _btnShapeFollow;
+        // 这个宫格自己的占地（占几个桌面图标格，null = 自动）和行列数（null = 跟随总配置）
+        NumericUpDown _numFpCols, _numFpRows, _numCols, _numRows;
+        Button _btnFpFollow, _btnShapeFollow;
         Label _lblShapeInfo;
         Label _lblPosInfo;
         CmbPreview _preview;
@@ -619,28 +619,47 @@ namespace WinQuad.Manager
             actRow.Controls.Add(btnSync);
             AddRow(t, 2, "", actRow);
 
-            // ── 这个宫格自己的形状 ──
+            // ── 这个宫格自己的占地与形状 ──
             // 放在「位置」组里，因为它和位置一样是**宫格级**的设置，
             // 而上面那个「程序与外观」组里的每一行都是**选中格**的设置，两者不能混。
+            //
+            // 「占用」和「形状」是两层独立的设置：
+            //   占用 = 宫格占几个桌面图标格（每格 83×114）—— 决定外框多大
+            //   形状 = 宫格里面装几列几行格子              —— 决定外框怎么分
+            // 所以可以"占 2×2 个图标格，里面放 3×3 共 9 个格子"。
+            var fpRow = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, Margin = new Padding(0) };
+            _numFpCols = new NumericUpDown { Width = 52, Height = 26, Minimum = 1, Maximum = 8 };
+            _numFpCols.ValueChanged += (s, e) => OnLayoutEdited();
+            fpRow.Controls.Add(_numFpCols);
+            fpRow.Controls.Add(new Label { Text = " 格宽 × ", Width = 54, Height = 26, TextAlign = ContentAlignment.MiddleLeft });
+            _numFpRows = new NumericUpDown { Width = 52, Height = 26, Minimum = 1, Maximum = 8 };
+            _numFpRows.ValueChanged += (s, e) => OnLayoutEdited();
+            fpRow.Controls.Add(_numFpRows);
+            fpRow.Controls.Add(new Label { Text = " 格高", Width = 40, Height = 26, TextAlign = ContentAlignment.MiddleLeft });
+            _btnFpFollow = new Button { Text = "自动", Width = 60, Height = 26, Margin = new Padding(8, 0, 0, 0) };
+            _btnFpFollow.Click += (s, e) => SetFootprintAuto();
+            fpRow.Controls.Add(_btnFpFollow);
+            AddRow(t, 3, "占用", fpRow);
+
             var shapeRow = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, Margin = new Padding(0) };
             _numCols = new NumericUpDown { Width = 52, Height = 26, Minimum = 1, Maximum = 8 };
-            _numCols.ValueChanged += (s, e) => OnShapeEdited();
+            _numCols.ValueChanged += (s, e) => OnLayoutEdited();
             shapeRow.Controls.Add(_numCols);
             shapeRow.Controls.Add(new Label { Text = " 列 × ", Width = 42, Height = 26, TextAlign = ContentAlignment.MiddleLeft });
             _numRows = new NumericUpDown { Width = 52, Height = 26, Minimum = 1, Maximum = 8 };
-            _numRows.ValueChanged += (s, e) => OnShapeEdited();
+            _numRows.ValueChanged += (s, e) => OnLayoutEdited();
             shapeRow.Controls.Add(_numRows);
             shapeRow.Controls.Add(new Label { Text = " 行", Width = 34, Height = 26, TextAlign = ContentAlignment.MiddleLeft });
             _btnShapeFollow = new Button { Text = "跟随总配置", Width = 88, Height = 26, Margin = new Padding(8, 0, 0, 0) };
             _btnShapeFollow.Click += (s, e) => SetShapeFollow();
             shapeRow.Controls.Add(_btnShapeFollow);
-            AddRow(t, 3, "形状", shapeRow);
+            AddRow(t, 4, "形状", shapeRow);
 
             _lblShapeInfo = new Label
             {
                 Dock = DockStyle.Top,
                 AutoSize = false,
-                Height = 32,
+                Height = 46,
                 ForeColor = Color.DimGray,
                 Font = new Font("Microsoft YaHei UI", 8f)
             };
@@ -1052,10 +1071,13 @@ namespace WinQuad.Manager
             ? Current.Items[_itemList.SelectedIndex] : null;
 
         /// <summary>
-        /// 当前宫格实际生效的尺寸 = 总配置的尺寸 + 这个宫格自己的行列数。
+        /// 当前宫格实际生效的尺寸 = 总配置的尺寸 + 这个宫格自己的占地与行列数。
         /// 宫格宽高、判定框、预览尺寸全部从它算，保证三处永远一致。
         /// </summary>
-        SizeSection EffectiveSize => _cfg?.Size?.WithLayout(Current?.Layout);
+        SizeSection EffectiveSize => _cfg?.Size?.WithLayout(
+            Current?.Layout,
+            _cfg?.Behaviour?.GridStepX ?? 83,
+            _cfg?.Behaviour?.GridStepY ?? 114);
 
         /// <summary>当前宫格一共几个格子（按它自己的行列数）。</summary>
         int CellCount(GroupFile g)
@@ -1649,30 +1671,61 @@ namespace WinQuad.Manager
             UpdatePosInfo();
         }
 
-        /// <summary>把「形状」三个控件刷成当前宫格的值。</summary>
+        /// <summary>把「占用」「形状」两组控件刷成当前宫格的值。</summary>
         void SyncShapeControls(GroupFile g)
         {
             var own = g?.Layout ?? new LayoutSection();
             int gc = _cfg?.Size?.Cols ?? 2;
             int gr = _cfg?.Size?.Rows ?? 2;
 
+            // 占用没设时，界面显示"实际等效几格"（按当前外框折算），让人看得懂现状
+            var eff0 = EffectiveSize;
+            int fpc = own.FootprintCols ?? Math.Max(1, (int)Math.Round(
+                (double)eff0.Width / Math.Max(1, _cfg?.Behaviour?.GridStepX ?? 83)));
+            int fpr = own.FootprintRows ?? Math.Max(1, (int)Math.Round(
+                (double)eff0.Height / Math.Max(1, _cfg?.Behaviour?.GridStepY ?? 114)));
+
+            _numFpCols.Value = Math.Max(1, Math.Min(8, fpc));
+            _numFpRows.Value = Math.Max(1, Math.Min(8, fpr));
             _numCols.Value = Math.Max(1, Math.Min(8, own.Cols ?? gc));
             _numRows.Value = Math.Max(1, Math.Min(8, own.Rows ?? gr));
         }
 
         /// <summary>
-        /// 用户改了行列数。写进**这个宫格自己的** layout，
+        /// 用户改了「占用」或「形状」。两项都写进**这个宫格自己的** layout，
         /// 不去动总配置 —— 别的宫格不受影响。
         /// </summary>
-        void OnShapeEdited()
+        void OnLayoutEdited()
         {
             if (_loading) return;
             var g = Current;
             if (g == null) return;
 
             g.Layout ??= new LayoutSection();
+            g.Layout.FootprintCols = (int)_numFpCols.Value;
+            g.Layout.FootprintRows = (int)_numFpRows.Value;
             g.Layout.Cols = (int)_numCols.Value;
             g.Layout.Rows = (int)_numRows.Value;
+
+            AfterLayoutChange();
+        }
+
+        /// <summary>把这一宫格的占地清空，改回"自动按标准格位算"。</summary>
+        void SetFootprintAuto()
+        {
+            var g = Current;
+            if (g == null) return;
+            g.Layout ??= new LayoutSection();
+            g.Layout.FootprintCols = null;
+            g.Layout.FootprintRows = null;
+            AfterLayoutChange();
+        }
+
+        void AfterLayoutChange()
+        {
+            var g = Current;
+            _loading = true;
+            try { SyncShapeControls(g); } finally { _loading = false; }
 
             RefreshItemList();
             UpdateShapeInfo();
@@ -1691,44 +1744,42 @@ namespace WinQuad.Manager
             g.Layout.Cols = null;
             g.Layout.Rows = null;
 
-            _loading = true;
-            try { SyncShapeControls(g); } finally { _loading = false; }
-
-            RefreshItemList();
-            UpdateShapeInfo();
-            MarkDirty();
-            _preview.Invalidate();
-            RelayoutPreview();
+            AfterLayoutChange();
         }
 
-        /// <summary>刷新「形状」下面那行说明：现在是自己定还是跟随总配置。</summary>
+        /// <summary>刷新「形状」下面那行说明：占地是自动还是指定，格子是跟随还是单独。</summary>
         void UpdateShapeInfo()
         {
-            if (_lblShapeInfo == null || _btnShapeFollow == null) return;
+            if (_lblShapeInfo == null || _btnShapeFollow == null || _btnFpFollow == null) return;
 
             var g = Current;
             int gc = _cfg?.Size?.Cols ?? 2;
             int gr = _cfg?.Size?.Rows ?? 2;
             var own = g?.Layout;
-            bool follow = own == null || (!own.Cols.HasValue && !own.Rows.HasValue);
+
+            bool fpAuto = own == null || !own.HasFootprint;
+            bool shapeFollow = own == null || (!own.Cols.HasValue && !own.Rows.HasValue);
+
+            _btnFpFollow.Text = fpAuto ? "指定" : "自动";
 
             var eff = EffectiveSize;
-            string size = (eff != null) ? ("　实际 " + eff.Width + " × " + eff.Height
-                                           + "　判定框 " + eff.FootprintWidth + " × " + eff.FootprintHeight)
-                                        : "";
+            string size = (eff != null)
+                ? ("　外框 " + eff.Width + " × " + eff.Height
+                   + "　单格 " + eff.CellWidth + "×" + eff.CellHeight
+                   + " × " + (eff.Cols * eff.Rows) + " 格")
+                : "";
 
-            if (follow)
-            {
-                _btnShapeFollow.Text = "改为单独设置";
-                _lblShapeInfo.Text = "跟随总配置（" + gc + " 列 × " + gr + " 行）—— 改总配置时这一格会跟着变。" + size;
-                _lblShapeInfo.ForeColor = Color.FromArgb(0, 100, 170);
-            }
-            else
-            {
-                _btnShapeFollow.Text = "改回跟随总配置";
-                _lblShapeInfo.Text = "本宫格单独设置 —— 只影响这一个，别的宫格不变。" + size;
-                _lblShapeInfo.ForeColor = Color.FromArgb(170, 90, 0);
-            }
+            string l1 = fpAuto
+                ? "占用：自动（按标准格位）"
+                : ("占用：" + own.FootprintCols + " × " + own.FootprintRows + " 个图标格");
+            string l2 = shapeFollow
+                ? ("形状：跟随总配置（" + gc + " 列 × " + gr + " 行）")
+                : ("形状：本宫格单独设置（" + own.Cols + " 列 × " + own.Rows + " 行）");
+
+            _lblShapeInfo.Text = l1 + "　" + l2 + "\r\n" + size.TrimStart();
+            _lblShapeInfo.ForeColor = (fpAuto && shapeFollow)
+                ? Color.FromArgb(0, 100, 170)
+                : Color.FromArgb(170, 90, 0);
         }
 
         static decimal ClampNum(int v, int lo, int hi) =>

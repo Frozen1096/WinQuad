@@ -433,13 +433,27 @@ namespace WinQuad
     }
 
     /// <summary>
-    /// 单个宫格自己的行列数。两个都留空（null）就跟随总配置 config.json 的 size.cols / size.rows。
-    /// 有了它，一个宫格可以是 2×2，另一个是 1×2 或 2×1，互不影响。
+    /// 单个宫格自己的形状与占地。全部留空（null）就跟随总配置 config.json 的
+    /// size.cols / size.rows，且外框按标准格位算。
+    ///
+    /// 两层是**独立**的：
+    ///   · FootprintCols/Rows —— 宫格**占几个桌面图标格**（每格 = 图标格距 83×114）。
+    ///     这就是"不局限于一个图标的宽度"。
+    ///   · Cols/Rows —— 宫格**里面装几列几行格子**。
+    ///
+    /// 所以可以"占 2×2 个图标格，里面放 3×3 共 9 个格子"。
     /// </summary>
     internal sealed class LayoutSection
     {
+        [JsonPropertyName("footprintCols")] public int? FootprintCols { get; set; }
+        [JsonPropertyName("footprintRows")] public int? FootprintRows { get; set; }
         [JsonPropertyName("cols")] public int? Cols { get; set; }
         [JsonPropertyName("rows")] public int? Rows { get; set; }
+
+        /// <summary>有没有指定占地。指定了才走"按图标格算外框"那条路。</summary>
+        public bool HasFootprint =>
+            FootprintCols.HasValue && FootprintRows.HasValue &&
+            FootprintCols.Value > 0 && FootprintRows.Value > 0;
     }
 
     internal sealed class PositionSection
@@ -517,31 +531,46 @@ namespace WinQuad
             // 宫格自己的行列数优先；没写就跟随总配置
             int cols = Math.Max(1, own?.Cols ?? s.Cols);
             int rows = Math.Max(1, own?.Rows ?? s.Rows);
-            bool custom = cols != s.Cols || rows != s.Rows;
+            bool customCells = cols != s.Cols || rows != s.Rows;
 
-            int cw = Math.Max(8, s.CellWidth);
-            int ch = Math.Max(8, s.CellHeight);
+            int cw, ch, fpW, fpH;
 
-            // ★ 格子数变了，**外框尺寸不变**，让剩下的格子摊开占满。
-            //
-            // 之前是"格子大小不变、外框跟着缩"：2×2 改成 1×2 后宫格从 79 宽缩到 41 宽，
-            // 变成一条窄缝，长名字更放不下了 —— 正好和"想给长名字留位置"的意图相反。
-            // 现在外框按**总配置那套行列数**算出的标准格位保持不变，格子数少了每格就更大：
-            //   2×2 -> 每格 37×48（和以前完全一样）
-            //   1×2 -> 每格 75×48（宽格子，长名字放得下）
-            //   2×1 -> 每格 37×97（高格子）
-            if (custom)
+            if (own != null && own.HasFootprint)
             {
+                // ── ① 按桌面图标格算外框（"不局限于一个图标的宽度"）──
+                // 外框 = 占用格数 × 图标格距，再让出 bleed，使"外框 + bleed"正好等于整数个图标格。
+                // 这样宫格占的位置和桌面图标格对齐，相邻格位不会被压到。
+                fpW = own.FootprintCols.Value * IconStepX;
+                fpH = own.FootprintRows.Value * IconStepY;
+                int W = Math.Max(16, fpW - s.Bleed * 2);
+                int H = Math.Max(16, fpH - s.Bleed * 2);
+                cw = Math.Max(8, (W - s.PadX * 2 - s.Gap * (cols - 1)) / cols);
+                ch = Math.Max(8, (H - s.PadY * 2 - s.Gap * (rows - 1)) / rows);
+            }
+            else
+            {
+                // ── ② 没指定占地：外框按总配置那套行列数算出的"标准格位"，格子数少了就摊开 ──
+                //   2×2 -> 每格 37×48（和以前一样）
+                //   1×2 -> 每格 75×48（宽格子，长名字放得下）
+                //   2×1 -> 每格 37×97（高格子）
                 int gc = Math.Max(1, s.Cols), gr = Math.Max(1, s.Rows);
-                int fpW = s.PadX * 2 + s.CellWidth * gc + s.Gap * (gc - 1);
-                int fpH = s.PadY * 2 + s.CellHeight * gr + s.Gap * (gr - 1);
-                cw = Math.Max(8, (fpW - s.PadX * 2 - s.Gap * (cols - 1)) / cols);
-                ch = Math.Max(8, (fpH - s.PadY * 2 - s.Gap * (rows - 1)) / rows);
+                fpW = s.PadX * 2 + s.CellWidth * gc + s.Gap * (gc - 1);
+                fpH = s.PadY * 2 + s.CellHeight * gr + s.Gap * (gr - 1);
+
+                if (customCells)
+                {
+                    cw = Math.Max(8, (fpW - s.PadX * 2 - s.Gap * (cols - 1)) / cols);
+                    ch = Math.Max(8, (fpH - s.PadY * 2 - s.Gap * (rows - 1)) / rows);
+                }
+                else
+                {
+                    cw = Math.Max(8, s.CellWidth);
+                    ch = Math.Max(8, s.CellHeight);
+                }
             }
 
             var m = new LayoutMetrics
             {
-                // 宫格自己的行列数优先；没写就跟随总配置
                 Cols = cols,
                 Rows = rows,
                 CellW = cw,
@@ -685,14 +714,21 @@ namespace WinQuad
             BuildContextMenu();
 
             var fp = _m.Footprint;
+            bool explicitFootprint = grp.Layout != null && grp.Layout.HasFootprint;
             Program.Log("版面 " + _m.W + "x" + _m.H + "  判定框 " + fp.Width + "x" + fp.Height
                         + "  (图标格距 " + LayoutMetrics.IconStepX + "x" + LayoutMetrics.IconStepY + ")"
-                        + "  每格 " + _m.CellW + "x" + _m.CellH
+                        + "  占用 " + Math.Round((double)fp.Width / LayoutMetrics.IconStepX, 2)
+                        + "x" + Math.Round((double)fp.Height / LayoutMetrics.IconStepY, 2) + " 个图标格"
+                        + "  每格 " + _m.CellW + "x" + _m.CellH + " x" + (_m.Cols * _m.Rows)
                         + "  图标 " + _m.IconSize + "px  标签 " + _m.LabelH + "px  "
                         + cfg.Style.FontSizePt + "pt  拖动环 " + _m.RingSize + "px");
-            if (fp.Width > LayoutMetrics.IconStepX || fp.Height > LayoutMetrics.IconStepY)
+
+            // 只有"没显式指定占地"时才警告。显式指定了占用几格，跨格是故意的。
+            if (!explicitFootprint &&
+                (fp.Width > LayoutMetrics.IconStepX || fp.Height > LayoutMetrics.IconStepY))
                 Program.Log("[警告] 判定框 " + fp.Width + "x" + fp.Height
-                            + " 大于图标格距，将无法拖进图标之间、且会遮住相邻图标！");
+                            + " 大于图标格距，将无法拖进图标之间、且会遮住相邻图标！"
+                            + "（想跨多格请在管理器里设「占用」）");
         }
 
         void RebuildFont()
