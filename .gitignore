@@ -38,3 +38,6 @@ assets/_*
 Thumbs.db
 Desktop.ini
 *.swp
+
+# 工作区目录的索引文件，不属于项目本身
+说明.md
