@@ -17,10 +17,10 @@
     <!-- 图标源文件是 assets\icon.svg，用 assets\render-icon.ps1 + make-ico.ps1 生成 -->
     <ApplicationIcon>..\assets\icon.ico</ApplicationIcon>
 
-    <!-- v0.2：每个宫格可单独设占地与形状、自动等比、文字投影、右键快捷方式操作 -->
-    <Version>0.2.0</Version>
-    <FileVersion>0.2.0.0</FileVersion>
-    <AssemblyVersion>0.2.0.0</AssemblyVersion>
+    <!-- v0.2.1：支持 .url（Steam 等商店在桌面上建的快捷方式）的溯源与图标 -->
+    <Version>0.2.1</Version>
+    <FileVersion>0.2.1.0</FileVersion>
+    <AssemblyVersion>0.2.1.0</AssemblyVersion>
     <Product>WinQuad —— Windows 桌面四宫格</Product>
     <Description>把桌面快捷方式收进 2×2 的小格子，每个格子只占一个图标的位置。</Description>
     <Company>Frozen1096</Company>
