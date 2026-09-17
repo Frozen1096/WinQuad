@@ -44,6 +44,23 @@ namespace WinQuad.Manager
                 return;
             }
 
+            // 调试：把路径溯源的结果打出来（.lnk / .url / 命令行 分别被解析成了什么）。
+            // 用法：WinQuad.Manager.exe --resolve "C:\Users\x\Desktop\某游戏.url"
+            if (args.Length >= 2 && args[0] == "--resolve")
+            {
+                for (int i = 1; i < args.Length; i++)
+                {
+                    var it = new GroupItem { Path = args[i], Icon = null };
+                    bool changed = PathResolver.Upgrade(it);
+                    Console.WriteLine("输入  : " + args[i]);
+                    Console.WriteLine("  path: " + it.Path + (changed ? "   <- 被溯源改写" : "   （未改动）"));
+                    Console.WriteLine("  icon: " + (it.Icon ?? "（无）"));
+                    Console.WriteLine("  文件存在: " + System.IO.File.Exists(it.Path));
+                    Console.WriteLine();
+                }
+                return;
+            }
+
             // 调试：把界面离屏渲染成 PNG，不显示任何窗口。
             // 改完界面想确认排版对不对，又不想弹窗打断正在用电脑的人时，用这个。
             if (args.Length >= 3 && args[0] == "--shot")

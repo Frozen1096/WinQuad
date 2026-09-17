@@ -228,6 +228,70 @@ namespace WinQuad
     }
 
     /// <summary>
+    /// .url（Internet 快捷方式）解析。
+    ///
+    /// Steam、Epic 之类的商店在桌面上建的就是这个格式。它是纯文本的 INI，长这样：
+    ///
+    ///     [InternetShortcut]
+    ///     URL=steam://rungameid/1172470
+    ///     IconFile=D:\steam\steam\games\8986dd....ico
+    ///     IconIndex=0
+    ///
+    /// 两个字段各有用处：
+    ///   URL       —— 真正的启动目标。存它而不是存 .url 的路径，桌面文件删掉也不怕。
+    ///   IconFile  —— 图标。可能指向 .ico，也可能指向 .exe（战地 6 那种），
+    ///                两种都交给 ExtractIconEx 处理即可。
+    ///
+    /// 和管理器里的同名类是**各自一份**：两个 exe 是独立的 .NET 项目，
+    /// 没有共享程序集，这点重复比多引一个项目划算。
+    /// </summary>
+    internal static class UrlShortcut
+    {
+        public sealed class Info
+        {
+            public string Url;
+            public string IconFile;
+            public int IconIndex;
+        }
+
+        /// <summary>解析 .url 文件。读不了或格式不对就返回 null。</summary>
+        public static Info Parse(string path)
+        {
+            try
+            {
+                if (!File.Exists(path)) return null;
+
+                var info = new Info();
+                foreach (string raw in File.ReadAllLines(path))
+                {
+                    string line = raw.Trim();
+                    if (line.Length == 0 || line[0] == '[' || line[0] == ';') continue;
+
+                    int eq = line.IndexOf('=');
+                    if (eq <= 0) continue;
+
+                    string key = line.Substring(0, eq).Trim();
+                    string val = line.Substring(eq + 1).Trim();
+                    if (val.Length == 0) continue;
+
+                    // INI 的键名不区分大小写
+                    if (key.Equals("URL", StringComparison.OrdinalIgnoreCase)) info.Url = val;
+                    else if (key.Equals("IconFile", StringComparison.OrdinalIgnoreCase)) info.IconFile = val;
+                    else if (key.Equals("IconIndex", StringComparison.OrdinalIgnoreCase))
+                    {
+                        int idx;
+                        if (int.TryParse(val, out idx) && idx >= 0) info.IconIndex = idx;
+                    }
+                }
+
+                return string.IsNullOrWhiteSpace(info.Url) && string.IsNullOrWhiteSpace(info.IconFile)
+                    ? null : info;
+            }
+            catch { return null; }
+        }
+    }
+
+    /// <summary>
     /// 解析 .lnk 快捷方式的目标路径。
     /// 这是「去掉快捷方式小箭头」的关键：箭头是外壳在处理 .lnk 时叠加的，
     /// 拿到真正的 .exe 之后再取图标就没有箭头了。
@@ -1857,7 +1921,33 @@ namespace WinQuad
                 return ic;
             }
 
-            // 4) 其他（.url / .bat 等）只能靠外壳
+            // 3.5) .url —— Steam / Epic 之类的商店在桌面上建的就是这个。
+            //
+            // 关键在 IconFile= 那一行：图标不在 .url 文件里，是它指过去的。
+            // 直接用 SHGetFileInfo 读 .url，外壳会把它当快捷方式，
+            // 在图标左下角叠一个小箭头 —— 读 IconFile 才干净。
+            //
+            // 这一条同时兜住"手改配置、直接把 .url 路径填进 path"的情况；
+            // 管理器的溯源会把 path 换成协议 URL、图标另存到 icon 字段，那条路走上面第 1 步。
+            if (e == ".url")
+            {
+                var u = UrlShortcut.Parse(p);
+                if (u != null && !string.IsNullOrWhiteSpace(u.IconFile))
+                {
+                    var ic = Native.ExtractIconAt(u.IconFile, u.IconIndex)
+                             ?? Native.LoadShellIcon(u.IconFile);
+                    if (ic != null)
+                    {
+                        how = "解析 .url -> " + Path.GetFileName(u.IconFile) + "（无小箭头）";
+                        return ic;
+                    }
+                }
+                how = "外壳图标 " + Path.GetFileName(p)
+                      + (u == null ? "（.url 读不出来）" : "（没写 IconFile，会带小箭头）");
+                return Native.LoadShellIcon(p);
+            }
+
+            // 4) 其他（.bat 等）只能靠外壳
             how = "外壳图标 " + Path.GetFileName(p);
             return Native.LoadShellIcon(p);
         }

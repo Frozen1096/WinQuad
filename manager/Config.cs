@@ -972,6 +972,18 @@ namespace WinQuad.Manager
                 return FromShell(path);   // 解析不了只能带箭头
             }
 
+            // .url -> 读 IconFile，别让外壳叠上快捷方式小箭头
+            if (ext == ".url")
+            {
+                var u = UrlShortcut.Parse(path);
+                if (u != null && !string.IsNullOrWhiteSpace(u.IconFile))
+                {
+                    var ic = FromExe(u.IconFile) ?? FromShell(u.IconFile);
+                    if (ic != null) return ic;
+                }
+                return FromShell(path);   // 没写 IconFile 就只能带箭头
+            }
+
             if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp")
             {
                 try

@@ -62,7 +62,8 @@ namespace WinQuad.Manager
 
         /// <summary>
         /// 把一项的 Path 尽量追溯成真正的程序文件。
-        /// .lnk → 解析目标；命令行带参数 → 取出可执行部分；相对命令名 → 查 PATH / App Paths。
+        /// .lnk → 解析目标；.url → 取出协议 URL；命令行带参数 → 取出可执行部分；
+        /// 相对命令名 → 查 PATH / App Paths。
         /// 追溯不到就原样保留，绝不乱改用户填的东西。
         /// </summary>
         public static bool Upgrade(GroupItem it)
@@ -72,8 +73,25 @@ namespace WinQuad.Manager
             string before = it.Path;
             string p = Environment.ExpandEnvironmentVariables(it.Path.Trim());
 
-            // .url（Steam 之类的协议）保持原样，它本来就是外壳对象
-            if (p.EndsWith(".url", StringComparison.OrdinalIgnoreCase)) return false;
+            // .url（Steam / Epic 之类的商店在桌面上建的就是这个）→ 取出里面的 URL。
+            //
+            // 为什么不能原样留着：.url 和 .lnk 一样，用户把游戏放进格子之后
+            // 桌面上那个文件肯定要删 —— 路径还指向它的话格子就废了。
+            // 把 steam://rungameid/xxx 这种协议地址直接存下来，由外壳负责启动，
+            // 桌面文件删掉也不影响。
+            //
+            // 顺带：图标单独存到 icon 字段。.url 的图标不在文件里，靠 IconFile= 指过去，
+            // 直接读它才不会叠上快捷方式小箭头（SHGetFileInfo 读 .url 会叠）。
+            if (p.EndsWith(".url", StringComparison.OrdinalIgnoreCase))
+            {
+                var u = UrlShortcut.Parse(p);
+                if (u == null || string.IsNullOrWhiteSpace(u.Url)) return false;
+
+                it.Path = u.Url.Trim();
+                if (string.IsNullOrWhiteSpace(it.Icon) && !string.IsNullOrWhiteSpace(u.IconFile))
+                    it.Icon = u.IconFile.Trim();
+                return it.Path != before;
+            }
 
             if (p.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase))
             {
@@ -119,6 +137,67 @@ namespace WinQuad.Manager
             if (i > 0) return s.Substring(0, i + 4);
             int sp = s.IndexOf(' ');
             return sp > 0 ? s.Substring(0, sp) : s;
+        }
+    }
+
+    /// <summary>
+    /// .url（Internet 快捷方式）解析。
+    ///
+    /// Steam、Epic 之类的商店在桌面上建的就是这个格式。它是纯文本的 INI，长这样：
+    ///
+    ///     [InternetShortcut]
+    ///     URL=steam://rungameid/1172470
+    ///     IconFile=D:\steam\steam\games\8986dd....ico
+    ///     IconIndex=0
+    ///
+    /// 两个字段各有用处：
+    ///   URL       —— 真正的启动目标。存它而不是存 .url 的路径，桌面文件删掉也不怕。
+    ///   IconFile  —— 图标。可能指向 .ico，也可能指向 .exe（战地 6 那种），
+    ///                两种都由调用方按扩展名处理。
+    /// </summary>
+    internal static class UrlShortcut
+    {
+        public sealed class Info
+        {
+            public string Url;
+            public string IconFile;
+            public int IconIndex;
+        }
+
+        /// <summary>解析 .url 文件。读不了或格式不对就返回 null。</summary>
+        public static Info Parse(string path)
+        {
+            try
+            {
+                if (!File.Exists(path)) return null;
+
+                var info = new Info();
+                foreach (string raw in File.ReadAllLines(path))
+                {
+                    string line = raw.Trim();
+                    if (line.Length == 0 || line[0] == '[' || line[0] == ';') continue;
+
+                    int eq = line.IndexOf('=');
+                    if (eq <= 0) continue;
+
+                    string key = line.Substring(0, eq).Trim();
+                    string val = line.Substring(eq + 1).Trim();
+                    if (val.Length == 0) continue;
+
+                    // INI 的键名不区分大小写
+                    if (key.Equals("URL", StringComparison.OrdinalIgnoreCase)) info.Url = val;
+                    else if (key.Equals("IconFile", StringComparison.OrdinalIgnoreCase)) info.IconFile = val;
+                    else if (key.Equals("IconIndex", StringComparison.OrdinalIgnoreCase))
+                    {
+                        int idx;
+                        if (int.TryParse(val, out idx) && idx >= 0) info.IconIndex = idx;
+                    }
+                }
+
+                return string.IsNullOrWhiteSpace(info.Url) && string.IsNullOrWhiteSpace(info.IconFile)
+                    ? null : info;
+            }
+            catch { return null; }
         }
     }
 

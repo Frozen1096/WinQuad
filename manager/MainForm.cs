@@ -1300,7 +1300,12 @@ namespace WinQuad.Manager
 
                 var it = new GroupItem { Path = f, Icon = null };
                 PathResolver.Upgrade(it);                  // 快捷方式自动追溯成真正的 exe
-                it.Caption = SuggestCaption(it.Path);
+
+                // 追溯之后 .url 的 path 变成了 steam://rungameid/1172470 这种协议地址，
+                // 从它算不出名字（会得到一串数字），所以 .url 用原文件名当标题 ——
+                // 那才是"战地风云 6""Apex Legends"这样的东西。
+                bool wasUrl = f.EndsWith(".url", StringComparison.OrdinalIgnoreCase);
+                it.Caption = SuggestCaption(wasUrl ? f : it.Path);
 
                 // 只在当前宫格的格子范围内找空位，不往容量外追加
                 int slot = -1;

@@ -9,6 +9,65 @@
 
 以下改动已完成、已在本机生效，但**尚未推送到 GitHub**。
 
+### 支持 .url（Steam 等商店在桌面上建的快捷方式）
+
+用户反馈：需要对 Steam 之类在桌面上创建的 `.url` 提供支持，落在「快速溯源」这一块。
+
+**`.url` 是什么**：Steam、Epic 这些商店在桌面上建的不是 `.lnk`，是纯文本的 INI：
+
+```ini
+[InternetShortcut]
+URL=steam://rungameid/1172470
+IconFile=D:\steam\steam\games\8986dd….ico
+IconIndex=0
+```
+
+**两个问题，一次解决**：
+
+**① 图标带快捷方式小箭头。** `.url` 和 `.lnk` 一样会被外壳当成快捷方式，
+`SHGetFileInfo` 取出来的图标左下角叠着一个蓝箭头。实测对比：
+
+| 取法 | 结果 |
+|---|---|
+| `SHGetFileInfo(.url)` | 图标**带**小箭头 |
+| 读 `IconFile=` 再加载 | 干净，**无箭头** |
+
+**② 桌面文件一删格子就废。** 和 `.lnk` 是同一个道理：用户把游戏放进格子之后，
+桌面上那个 `.url` 肯定要删。原来 `PathResolver.Upgrade` 对 `.url` 是**直接跳过**的
+（`if (p.EndsWith(".url")) return false;`），路径原样存着 —— 删了就启动不了。
+
+现在**溯源到协议地址**，由外壳负责启动：
+
+```
+输入  : C:\Users\dell\Desktop\Apex Legends.url
+  path: steam://rungameid/1172470          <- 被溯源改写
+  icon: D:\steam\steam\games\8986dd….ico
+```
+
+图标单独存进 `icon` 字段 —— 它不在 `.url` 文件里，删了 `.url` 就取不到了。
+
+**Battlefield 6 那种指向 .exe 的也对**（`IconFile=F:\...\bf6.exe`），
+`ExtractIconEx` 直接处理，不用区分 `.ico` / `.exe`。
+
+**顺带修的一处**：`AddFiles` 里标题是从追溯**之后**的路径算的。
+`.url` 追溯完变成 `steam://rungameid/1172470`，算出来会是一串数字。
+现在 `.url` 用原文件名当标题 —— 那才是「Apex Legends」这样的东西。
+
+**两处实现**（覆盖层和管理器是两个独立项目，没有共享程序集，各放一份 `UrlShortcut`）：
+
+- `overlay/Program.cs` 的 `LoadIconFor` 加了 `.url` 分支，兜住「手改配置直接填 .url 路径」
+- `manager/Config.cs` 的 `Icons.Load` 同样处理，管理器的预览才准
+
+**新增调试开关** `WinQuad.Manager.exe --resolve <路径…>`，直接把溯源结果打出来。
+
+机器上有 16 个 Steam `.url`，全部实测通过（15 个指向 `.ico`、1 个指向 `.exe`）。
+
+---
+
+## v0.2 — 2026-09-15
+
+已发布：<https://github.com/Frozen1096/WinQuad/releases/tag/v0.2>
+
 ### 宫格的「占地」与「形状」拆成两层（每宫格单独设置）
 
 用户要的是「不局限于一个图标的宽度，尝试在多个图标范围内（1×2、2×1、2×2 等），
