@@ -148,6 +148,13 @@ namespace WinQuad
         [StructLayout(LayoutKind.Sequential)]
         public struct POINT { public int X, Y; }
 
+        // --- 多显示器：坐标参照系换算 ---
+        // 宫格是 SHELLDLL_DefView 的子窗口，SetWindowPos 收的是**相对父窗口客户区**的坐标。
+        // 而桌面图标列表的坐标也是以它的客户区为原点。多显示器下这个原点不是 (0,0)：
+        // 主屏左边接一台屏，虚拟桌面原点就变成负数。所以两边都要换算。
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool ClientToScreen(IntPtr h, ref POINT p);
+
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
         public struct SHFILEINFO
         {
@@ -435,6 +442,19 @@ namespace WinQuad
         public bool SnapToIconGrid { get; set; } = true;
 
         /// <summary>
+        /// 是否在宫格占的每个图标格位上放隐藏占位文件，让系统认为那些位置已被占用。
+        ///
+        /// 为什么需要：宫格是桌面图标列表控件的**兄弟窗口**，不是列表项，
+        /// 系统不知道它存在，所以会往它覆盖的格位里放新图标（比如你刚存的文件）。
+        /// 放一个真实存在的隐藏空文件，系统就认了。
+        ///
+        /// 前提：桌面必须关闭「自动排列图标」。开着的话占位文件会被系统自己排走。
+        ///
+        /// 关掉这个开关只是一行判断，但占位文件会全部清理掉，桌面恢复原样。
+        /// </summary>
+        public bool Placeholders { get; set; } = true;
+
+        /// <summary>
         /// 自动避让时允许挪动的最大距离（像素）。0 = 不限制。
         /// 有上限才符合直觉：避让是为了防止你"无意间"盖住图标，
         /// 而不是把你明确放下的位置搬到几百像素外。附近真没空位就停在原地、只报警告。
@@ -718,35 +738,68 @@ namespace WinQuad
 
         public static Point SnapToIconGrid(int x, int y)
         {
-            var wa = Screen.PrimaryScreen.WorkingArea;
-            int sx = (int)Math.Round((double)(x - wa.Left) / IconStepX) * IconStepX + wa.Left;
-            int sy = (int)Math.Round((double)(y - wa.Top) / IconStepY) * IconStepY + wa.Top;
+            var o = DesktopOrigin();
+            int sx = (int)Math.Round((double)(x - o.X) / IconStepX) * IconStepX + o.X;
+            int sy = (int)Math.Round((double)(y - o.Y) / IconStepY) * IconStepY + o.Y;
             return new Point(sx, sy);
         }
 
         /// <summary>屏幕像素 → 图标网格序号。</summary>
         public static Point PixelsToGrid(int x, int y)
         {
-            var wa = Screen.PrimaryScreen.WorkingArea;
+            var o = DesktopOrigin();
             return new Point(
-                (int)Math.Round((double)(x - wa.Left) / IconStepX),
-                (int)Math.Round((double)(y - wa.Top) / IconStepY));
+                (int)Math.Round((double)(x - o.X) / IconStepX),
+                (int)Math.Round((double)(y - o.Y) / IconStepY));
         }
 
         /// <summary>图标网格序号 → 屏幕像素。</summary>
         public static Point GridToPixels(int col, int row)
         {
-            var wa = Screen.PrimaryScreen.WorkingArea;
-            return new Point(col * IconStepX + wa.Left, row * IconStepY + wa.Top);
+            var o = DesktopOrigin();
+            return new Point(col * IconStepX + o.X, row * IconStepY + o.Y);
         }
 
-        /// <summary>当前屏幕能容纳的列数 / 行数（给定网格尺寸）。</summary>
-        public static Point GridCapacity(LayoutMetrics m)
+        /// <summary>
+        /// 虚拟桌面左上角（**屏幕坐标**）。桌面图标网格的起点，也是宫格父窗口的客户区原点。
+        ///
+        /// 为什么必须动态取：多显示器下这个点不是 (0,0)。
+        /// 主屏左边接一台 2560 宽的屏，它就变成 (-2560, -193)。写死 (0,0) 的话，
+        /// 所有宫格都会整体偏到左边那台屏上去 —— 这正是之前的 bug。
+        ///
+        /// 取的是 SysListView32 的客户区原点：它和 SHELLDLL_DefView 一样覆盖整个虚拟桌面，
+        /// 两者原点相同。拿不到就退回主屏工作区左上角（单屏时就是 (0,0)，行为不变）。
+        /// </summary>
+        public static Point DesktopOrigin()
         {
+            try
+            {
+                IntPtr defView = Native.FindWindowEx(
+                    Native.FindWindow("Progman", null), IntPtr.Zero, "SHELLDLL_DefView", null);
+                IntPtr lv = defView == IntPtr.Zero ? IntPtr.Zero
+                           : Native.FindWindowEx(defView, IntPtr.Zero, "SysListView32", null);
+                if (lv != IntPtr.Zero)
+                {
+                    var p = new Native.POINT { X = 0, Y = 0 };
+                    if (Native.ClientToScreen(lv, ref p)) return new Point(p.X, p.Y);
+                }
+            }
+            catch { }
             var wa = Screen.PrimaryScreen.WorkingArea;
+            return new Point(wa.Left, wa.Top);
+        }
+
+        /// <summary>屏幕坐标 → 宫格子窗口坐标（SetWindowPos 用的是这个）。</summary>
+        public static Point ToChild(Point screen) { var o = DesktopOrigin(); return new Point(screen.X - o.X, screen.Y - o.Y); }
+
+        /// <summary>当前屏幕能容纳的列数 / 行数（给定网格尺寸）。默认按虚拟桌面算 ——
+        /// 图标网格是从虚拟桌面原点开始排的，用主屏工作区会少算。</summary>
+        public static Point GridCapacity(LayoutMetrics m, Rectangle? area = null)
+        {
+            var r = area ?? SystemInformation.VirtualScreen;
             return new Point(
-                Math.Max(1, (wa.Width - m.W) / IconStepX + 1),
-                Math.Max(1, (wa.Height - m.H) / IconStepY + 1));
+                Math.Max(1, (r.Width - m.W) / IconStepX + 1),
+                Math.Max(1, (r.Height - m.H) / IconStepY + 1));
         }
     }
 
@@ -757,6 +810,11 @@ namespace WinQuad
         readonly GroupFile _grp;
         readonly LayoutMetrics _m;
         readonly string _groupPath;
+
+        // 给占位文件用的只读出口（Placeholders 是外部静态类，够不着这些私有字段）
+        public PositionSection GroupPosition => _grp?.Position;
+        public LayoutMetrics Metrics => _m;
+        public string GroupName => _grp?.Name ?? Path.GetFileNameWithoutExtension(_groupPath);
 
         readonly Icon[] _icons = new Icon[4];
         readonly Rectangle[] _iconContent = new Rectangle[4];
@@ -845,7 +903,8 @@ namespace WinQuad
             {
                 var it = _grp.Items[i];
                 string want = it.Icon ?? _grp.Defaults?.Icon;
-                _icons[i] = Program.LoadIconFor(want, it.Path, out string how);
+                // 走缓存版本：命中就直接读 PNG，没命中才实时提取并写盘
+                _icons[i] = Program.IconCache.Load(want, it.Path, out string how);
                 if (_icons[i] == null) continue;
                 _iconContent[i] = TightContent(_icons[i]);
                 Program.Log("  格" + i + " " + (it.Caption ?? "") + " 图标来源：" + how);
@@ -898,27 +957,39 @@ namespace WinQuad
         public void ApplyGeometry()
         {
             IntPtr me = Handle;
-            bool ok = Native.SetWindowPos(me, Native.HWND_TOP, _grp.Position.X, _grp.Position.Y, _m.W, _m.H,
+
+            // _grp.Position 存的是**屏幕坐标**（和桌面图标一样，锚在主屏上，
+            // 接入新显示器不会让它跑掉）。但 SetWindowPos 对子窗口收的是
+            // **相对父窗口客户区**的坐标，多显示器下两者差一个虚拟桌面原点。
+            var child = LayoutMetrics.ToChild(new Point(_grp.Position.X, _grp.Position.Y));
+
+            bool ok = Native.SetWindowPos(me, Native.HWND_TOP, child.X, child.Y, _m.W, _m.H,
                 Native.SWP_NOACTIVATE | Native.SWP_SHOWWINDOW | Native.SWP_FRAMECHANGED);
 
             Native.RECT r;
             Native.GetWindowRect(me, out r);
-            Program.Log("geometry ok=" + ok + " rect=(" + r.L + "," + r.T + ")-(" + r.R + "," + r.B + ")"
+            Program.Log("geometry ok=" + ok
+                        + " 屏幕坐标=(" + _grp.Position.X + "," + _grp.Position.Y + ")"
+                        + " 子窗口坐标=(" + child.X + "," + child.Y + ")"
+                        + " 实际屏幕矩形=(" + r.L + "," + r.T + ")-(" + r.R + "," + r.B + ")"
                         + " size=" + (r.R - r.L) + "x" + (r.B - r.T)
                         + " visible=" + Native.IsWindowVisible(me));
         }
 
         void MoveTo(int x, int y)
         {
-            var wa = Screen.PrimaryScreen.WorkingArea;
-            if (x + _m.W > wa.Right) x = wa.Right - _m.W;
-            if (y + _m.H > wa.Bottom) y = wa.Bottom - _m.H;
-            if (x < wa.Left) x = wa.Left;
-            if (y < wa.Top) y = wa.Top;
+            // 夹在**虚拟桌面**范围内（不是主屏工作区）—— 多显示器下可以拖到副屏上去
+            var vs = SystemInformation.VirtualScreen;
+            if (x + _m.W > vs.Right) x = vs.Right - _m.W;
+            if (y + _m.H > vs.Bottom) y = vs.Bottom - _m.H;
+            if (x < vs.Left) x = vs.Left;
+            if (y < vs.Top) y = vs.Top;
 
             _grp.Position.X = x;
             _grp.Position.Y = y;
-            Native.SetWindowPos(Handle, Native.HWND_TOP, x, y, _m.W, _m.H,
+
+            var child = LayoutMetrics.ToChild(new Point(x, y));
+            Native.SetWindowPos(Handle, Native.HWND_TOP, child.X, child.Y, _m.W, _m.H,
                 Native.SWP_NOACTIVATE | Native.SWP_SHOWWINDOW);
         }
 
@@ -933,6 +1004,10 @@ namespace WinQuad
                 Native.FindWindowEx(Native.FindWindow("Progman", null), IntPtr.Zero, "SHELLDLL_DefView", null),
                 IntPtr.Zero, "SysListView32", null);
             if (lv == IntPtr.Zero) return null;
+
+            // 列表控件的客户区原点（屏幕坐标）。图标位置是相对它的，要加回去才是屏幕坐标。
+            var origin = new Native.POINT { X = 0, Y = 0 };
+            Native.ClientToScreen(lv, ref origin);
 
             uint pid;
             Native.GetWindowThreadProcessId(lv, out pid);
@@ -972,12 +1047,21 @@ namespace WinQuad
                         string name = Encoding.Unicode.GetString(txt);
                         int z = name.IndexOf('\0'); if (z >= 0) name = name.Substring(0, z);
 
+                        // ★ 跳过自己放的占位文件。
+                        // 它们就是设计来被宫格盖住的（让系统别往这儿放新图标），
+                        // 不排除的话每个宫格都会报"压住了桌面图标"，
+                        // 而且拖动后落点判定会把宫格从自己的位置上挤走。
+                        if (name.StartsWith(".WinQuad占位_", StringComparison.OrdinalIgnoreCase)) continue;
+
                         // 碰撞盒：图标在格位里水平居中、内容从格位顶部开始。
                         // 不是整个 78×113 格位 —— 那样会把"图标盒下方的空白"也算成占用，
                         // 于是宫格落在空处也会因为和空白重叠 3px 而被判冲突。
+                        //
+                        // ★ 列表控件给的是**客户区坐标**，必须加上客户区原点才是屏幕坐标，
+                        //   否则多显示器下和宫格的屏幕坐标不在一个参照系，避让判断全错。
                         int offX = (LayoutMetrics.IconStepX - LayoutMetrics.CollisionW) / 2;
                         list.Add(new KeyValuePair<string, Rectangle>(
-                            name, new Rectangle(x + offX, y,
+                            name, new Rectangle(x + offX + origin.X, y + origin.Y,
                                                 LayoutMetrics.CollisionW, LayoutMetrics.CollisionH)));
                     }
                 }
@@ -1035,40 +1119,56 @@ namespace WinQuad
 
         public static void ClampToWorkArea(PositionSection p, LayoutMetrics m)
         {
-            var wa = Screen.PrimaryScreen.WorkingArea;
-            int x = p.X == PositionSection.Unset ? wa.Left : p.X;
-            int y = p.Y == PositionSection.Unset ? wa.Top : p.Y;
-            if (x + m.W > wa.Right) x = wa.Right - m.W;
-            if (y + m.H > wa.Bottom) y = wa.Bottom - m.H;
-            if (x < wa.Left) x = wa.Left;
-            if (y < wa.Top) y = wa.Top;
+            // 夹在**虚拟桌面**范围内，而不是主屏工作区 ——
+            // 多显示器下宫格可以待在副屏上，用主屏工作区夹会把它弹回主屏。
+            var vs = SystemInformation.VirtualScreen;
+            int x = p.X == PositionSection.Unset ? vs.Left : p.X;
+            int y = p.Y == PositionSection.Unset ? vs.Top : p.Y;
+            if (x + m.W > vs.Right) x = vs.Right - m.W;
+            if (y + m.H > vs.Bottom) y = vs.Bottom - m.H;
+            if (x < vs.Left) x = vs.Left;
+            if (y < vs.Top) y = vs.Top;
             p.X = x; p.Y = y;
         }
 
         /// <summary>
         /// 确定宫格位置。
         ///
-        /// 只有一个来源：宫格文件里的 col/row（图标网格坐标）。
-        /// 曾经有"锚点自动放到某个角落"的功能，删掉了 ——
-        /// 它和手动拖动混在一起会产生"到底该听谁"的歧义，而手动拖动已经够方便。
-        /// 没设过 col/row 时退回像素坐标（兼容手写配置）。
+        /// **x/y 是权威**（屏幕坐标，和桌面图标一样锚在主屏上，
+        /// 接入新显示器不会让它跑掉）。col/row 只是派生出来方便人肉核对的。
+        ///
+        /// 老配置里只有 col/row 没有 x/y 的，才会用格位反算出像素 —— 兼容即可。
         /// </summary>
         public static void ResolvePosition(GroupFile g, LayoutMetrics m, int maxNudge)
         {
             var p = g.Position ?? (g.Position = new PositionSection());
 
+            // 屏幕坐标优先（新格式）
+            if (p.X != PositionSection.Unset && p.Y != PositionSection.Unset)
+            {
+                ClampToWorkArea(p, m);
+                SyncGridFromPixels(p);
+                Program.Log("[位置] 用屏幕坐标 (" + p.X + "," + p.Y + ")"
+                            + "  派生格位 col=" + p.Col + " row=" + p.Row
+                            + "  虚拟桌面原点 " + LayoutMetrics.DesktopOrigin());
+                return;
+            }
+
             if (p.Col == PositionSection.Unset || p.Row == PositionSection.Unset)
             {
                 ClampToWorkArea(p, m);
                 SyncGridFromPixels(p);
-                Program.Log("[位置] 未指定格位，使用像素坐标 (" + p.X + "," + p.Y + ")");
+                Program.Log("[位置] 未指定位置，使用像素坐标 (" + p.X + "," + p.Y + ")");
                 return;
             }
+
+            Program.Log("[位置] 老配置只有格位 col=" + p.Col + " row=" + p.Row + "，反算像素");
 
             List<KeyValuePair<string, Rectangle>> icons = null;
             try { icons = ReadDesktopIcons(); }
             catch (Exception ex) { Program.Log("读取桌面图标失败: " + ex.Message); }
 
+            // 容量按宫格将要待的那块屏算
             var cap = LayoutMetrics.GridCapacity(m);
             int col = Math.Clamp(p.Col, 0, cap.X - 1);
             int row = Math.Clamp(p.Row, 0, cap.Y - 1);
@@ -1178,7 +1278,10 @@ namespace WinQuad
             var icons = ReadDesktopIcons();
             if (icons == null) return null;
 
-            var wa = Screen.PrimaryScreen.WorkingArea;
+            // 只在**宫格当前所在的那块屏**里找空位。
+            // 用主屏工作区的话，放在副屏上的宫格会被硬拉回主屏。
+            var scr = Screen.FromPoint(new Point(x, y)) ?? Screen.PrimaryScreen;
+            var wa = scr.WorkingArea;
             var cands = new List<Point>();
             for (int cx = wa.Left; cx + _m.W <= wa.Right; cx += LayoutMetrics.IconStepX)
                 for (int cy = wa.Top; cy + _m.H <= wa.Bottom; cy += LayoutMetrics.IconStepY)
@@ -1952,6 +2055,400 @@ namespace WinQuad
             return Native.LoadShellIcon(p);
         }
 
+        /// <summary>
+        /// 图标缓存。
+        ///
+        /// 为什么要做：每次启动都要为每个格子调 ExtractIconEx / SHGetFileInfo
+        /// 从 .exe / .ico 里**当场抠图标**，一次读盘几百毫秒。格子越多越慢，
+        /// 实测 8 个宫格时光图标提取就占 1192 ms（整个启动 2.26 秒的一半以上）。
+        ///
+        /// 做法：第一次提取完把图标存成 PNG，之后直接读文件。
+        /// 失效判断用**输入文件的修改时间 + 大小**——want 和 itemPath 两个路径都没动，
+        /// 提取出来的图标就不可能变，所以不需要知道中间解析到了哪个文件。
+        /// （.lnk 改目标、.url 改 IconFile，都会让那两个文件自己的时间戳变。）
+        ///
+        /// 缓存目录：程序目录下的 icon-cache\
+        ///   {hash}.png    图标本体（32bpp ARGB，带透明度）
+        ///   {hash}.txt    一行文本，记两个源文件的路径/时间/大小，用来判断还能不能用
+        ///
+        /// 失败一律回退到实时提取，绝不因为缓存把图标搞丢。
+        /// </summary>
+        internal static class IconCache
+        {
+            static readonly string Dir = Path.Combine(AppContext.BaseDirectory, "icon-cache");
+            static int _hit, _miss, _write;
+
+            /// <summary>本次启动的命中/未命中统计，启动完打一行日志。</summary>
+            public static void LogStats()
+            {
+                if (_hit + _miss == 0) return;
+                int h = _hit, m = _miss, w = _write;
+                _hit = _miss = _write = 0;   // 打完就清零，免得下一轮统计叠加上去
+                Log("[图标缓存] 命中 " + h + " 个，重新提取 " + m + " 个"
+                    + (w > 0 ? "（新写入 " + w + " 个）" : ""));
+            }
+
+            /// <summary>
+            /// 带缓存的图标加载。want / itemPath 的含义和 LoadIconFor 完全一样。
+            /// </summary>
+            public static Icon Load(string want, string itemPath, out string how)
+            {
+                string key = KeyOf(want, itemPath);
+                if (key != null)
+                {
+                    var cached = TryRead(key, out how);
+                    if (cached != null) { _hit++; return cached; }
+                }
+
+                _miss++;
+                var ic = LoadIconFor(want, itemPath, out how);
+                if (ic != null && key != null)
+                {
+                    try { Write(key, ic, want, itemPath); _write++; }
+                    catch (Exception ex) { Log("  图标缓存写入失败: " + ex.Message); }
+                }
+                return ic;
+            }
+
+            /// <summary>清空缓存目录。管理器那边也调这个方法（逻辑各一份）。</summary>
+            public static int Clear()
+            {
+                try
+                {
+                    if (!Directory.Exists(Dir)) return 0;
+                    int n = 0;
+                    foreach (var f in Directory.GetFiles(Dir)) { File.Delete(f); n++; }
+                    return n / 2;   // 每个图标两个文件
+                }
+                catch (Exception ex) { Log("清空图标缓存失败: " + ex.Message); return 0; }
+            }
+
+            // ── 内部 ──
+
+            static string KeyOf(string want, string itemPath)
+            {
+                if (string.IsNullOrWhiteSpace(want) && string.IsNullOrWhiteSpace(itemPath)) return null;
+                try
+                {
+                    using (var md5 = System.Security.Cryptography.MD5.Create())
+                    {
+                        byte[] raw = System.Text.Encoding.UTF8.GetBytes(
+                            (want ?? "").Trim().ToLowerInvariant() + "\n" +
+                            (itemPath ?? "").Trim().ToLowerInvariant());
+                        byte[] h = md5.ComputeHash(raw);
+                        var sb = new System.Text.StringBuilder(16);
+                        for (int i = 0; i < 8; i++) sb.Append(h[i].ToString("x2"));
+                        return sb.ToString();
+                    }
+                }
+                catch { return null; }
+            }
+
+            /// <summary>
+            /// 把「源文件现在的状态」拼成一行，用来判断缓存还能不能用。
+            ///
+            /// 注意：这一行**不是可逆的**——路径里本身可能带 '|'，从这一行里反解不出原路径。
+            /// 所以元数据文件里路径和状态是分开存的（见 Write/TryRead）。
+            /// </summary>
+            static string Stamp(string path)
+            {
+                if (string.IsNullOrWhiteSpace(path)) return "none";
+                try
+                {
+                    string p = Environment.ExpandEnvironmentVariables(path.Trim());
+                    if (!File.Exists(p)) return "missing";
+                    var fi = new FileInfo(p);
+                    return fi.LastWriteTimeUtc.Ticks + "|" + fi.Length;
+                }
+                catch { return "error"; }
+            }
+
+            static string MetaPath(string key) => Path.Combine(Dir, key + ".txt");
+            static string PngPath(string key) => Path.Combine(Dir, key + ".png");
+
+            static Icon TryRead(string key, out string how)
+            {
+                how = null;
+                try
+                {
+                    string png = PngPath(key), meta = MetaPath(key);
+                    if (!File.Exists(png) || !File.Exists(meta)) return null;
+
+                    // 元数据 4 行：want 路径 / want 状态 / item 路径 / item 状态
+                    string[] m = File.ReadAllLines(meta);
+                    if (m.Length < 4) return null;
+                    if (m[1] != Stamp(m[0]) || m[3] != Stamp(m[2])) return null;
+
+                    using (var bmp = new Bitmap(png))
+                    {
+                        IntPtr h = bmp.GetHicon();
+                        try
+                        {
+                            var ic = (Icon)Icon.FromHandle(h).Clone();
+                            how = "缓存";
+                            return ic;
+                        }
+                        finally { Native.DestroyIcon(h); }
+                    }
+                }
+                catch { return null; }   // 缓存坏了就当没有
+            }
+
+            static void Write(string key, Icon ic, string want, string itemPath)
+            {
+                Directory.CreateDirectory(Dir);
+                using (var bmp = ic.ToBitmap())
+                    bmp.Save(PngPath(key), System.Drawing.Imaging.ImageFormat.Png);
+                File.WriteAllLines(MetaPath(key), new[]
+                {
+                    want ?? "", Stamp(want),
+                    itemPath ?? "", Stamp(itemPath)
+                });
+            }
+        }
+
+        /// <summary>
+        /// 桌面占位文件。
+        ///
+        /// 【要解决什么】
+        /// WinQuad 的宫格是 SysListView32 的**兄弟窗口**，不是列表里的项 ——
+        /// 桌面图标系统完全不知道它存在。所以用户往桌面上存个新文件时，
+        /// 系统会把图标放进宫格覆盖的格位里，宫格就被盖住了。
+        ///
+        /// 【怎么解决】
+        /// 在宫格实际占的每个图标格位上，放一个**真实存在的隐藏空文件**。
+        /// 系统认它，就认为那个格位被占了，不会再往那儿放东西。
+        ///
+        /// 这是"真的占用"而不是"骗系统"——所以不依赖任何注入或未公开接口。
+        ///
+        /// 【★ 只能设 Hidden，绝不能加 System】
+        /// 这是实测出来的硬限制，两种属性行为完全不同：
+        ///
+        ///   只 Hidden        图标数 +1，拿到位置 (2577,309)，新文件被挤到 (2577,651)  ✅ 占位有效
+        ///   Hidden + System  图标数不变，列表里根本没有它，新文件照样落在原处      ❌ 完全不占位
+        ///
+        /// 原因：Explorer 不给带 System 属性的项分配图标位置。
+        /// 之前那版设了 Hidden|System，所以一次都没成功过。
+        ///
+        /// 【什么时候摆】
+        /// 只在启动、以及「保存配置并重启」应用配置时摆一次。
+        /// 拖动时不跟着改 —— 拖完那个位置上的占位要等下次重启才更新，
+        /// 但反正占位是隐藏的，而且下次启动会先扫掉旧的再重摆，不会累积。
+        ///
+        /// 【前提】
+        /// 桌面必须关闭「自动排列图标」。开着的话占位文件自己会被系统排走，
+        /// 整个方案失效（宫格位置本身也会被排走，所以这个前提本来就成立）。
+        ///
+        /// 【放哪】
+        /// 优先公共桌面；写不进去就退回用户桌面。
+        /// 实测公共桌面的 ACL 对普通用户只有 ReadAndExecute，而程序必须 asInvoker，
+        /// 所以绝大多数机器上会走用户桌面那条。
+        ///
+        /// 【长什么样】
+        ///   .WinQuad占位_&lt;宫格名&gt;_&lt;列&gt;_&lt;行&gt;.tmp     0 字节，Hidden
+        ///   默认的资源管理器设置看不见；只有勾了「显示隐藏的项目」才会露出来。
+        ///
+        /// 【名字里为什么带列行】
+        /// 这样重建时不用先读旧文件就能算出去重目标；同一格位重复调用是幂等的。
+        /// </summary>
+        internal static class Placeholders
+        {
+            const string Prefix = ".WinQuad占位_";
+
+            static string _dir;
+
+            /// <summary>
+            /// 占位文件放在哪个目录。优先公共桌面，写不进去就退回用户桌面。
+            ///
+            /// 为什么不能写死公共桌面：它的 ACL 对普通用户只有 ReadAndExecute
+            /// （只有 Administrators 有 FullControl），而程序必须 asInvoker，
+            /// 于是所有创建都会 Access Denied —— 之前那版就是这样，一次没成功过。
+            ///
+            /// 用一个探针文件实测写权限，而不是只看目录在不在。
+            /// </summary>
+            static string Dir
+            {
+                get
+                {
+                    if (_dir != null) return _dir;
+
+                    string[] cands =
+                    {
+                        Environment.GetFolderPath(Environment.SpecialFolder.CommonDesktopDirectory),
+                        Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory)
+                    };
+                    foreach (string c in cands)
+                    {
+                        if (string.IsNullOrEmpty(c) || !Directory.Exists(c)) continue;
+                        try
+                        {
+                            string probe = Path.Combine(c, Prefix + "write-probe.tmp");
+                            using (File.Create(probe)) { }
+                            File.SetAttributes(probe, FileAttributes.Normal);
+                            File.Delete(probe);
+                            _dir = c;
+                            Log("[占位] 使用目录 " + c);
+                            return _dir;
+                        }
+                        catch (Exception ex) { Log("[占位] 不可写，换下一个: " + c + "  (" + ex.Message + ")"); }
+                    }
+                    Log("[占位] 找不到可写目录，功能关闭");
+                    return null;
+                }
+            }
+
+            /// <summary>这个进程本次放下的占位文件，退出时按这个清单清理。</summary>
+            static readonly List<string> Placed = new List<string>();
+
+            /// <summary>
+            /// 按宫格当前位置和占用格数，在对应的每个图标格位上放占位文件。
+            /// 幂等：同一个格位重复调用不会重复创建。
+            /// </summary>
+            public static void Sync(GridForm f)
+            {
+                try
+                {
+                    var pos = f.GroupPosition;
+                    var m = f.Metrics;
+                    if (pos == null || m == null) return;
+                    if (pos.Col < 0 || pos.Row < 0) return;
+
+                    // 占几个格位。Footprint 是"宫格 + 外扩"，除以图标格距再向上取整。
+                    int cols = Math.Max(1, (int)Math.Ceiling((double)m.Footprint.Width / Math.Max(1, LayoutMetrics.IconStepX)));
+                    int rows = Math.Max(1, (int)Math.Ceiling((double)m.Footprint.Height / Math.Max(1, LayoutMetrics.IconStepY)));
+
+                    string name = SafeName(f.GroupName);
+                    for (int dc = 0; dc < cols; dc++)
+                        for (int dr = 0; dr < rows; dr++)
+                            Ensure(name, pos.Col + dc, pos.Row + dr);
+                }
+                catch (Exception ex) { Log("[占位] 同步失败: " + ex.Message); }
+            }
+
+            /// <summary>确保某个格位上有一个占位文件。</summary>
+            static void Ensure(string group, int col, int row)
+            {
+                string dir = Dir;
+                if (string.IsNullOrEmpty(dir)) return;
+
+                string path = Path.Combine(dir, Prefix + group + "_" + col + "_" + row + ".tmp");
+                try
+                {
+                    if (File.Exists(path)) return;               // 已经在了
+                    File.WriteAllBytes(path, Array.Empty<byte>());  // 0 字节
+
+                    // ★ 只设 Hidden，**绝不能加 System**。
+                    // 实测：带 System 的隐藏项 Explorer 不给分配图标位置（列表里根本没有它），
+                    // 于是完全不占位；只带 Hidden 的会正常占位且默认看不见。
+                    File.SetAttributes(path, FileAttributes.Hidden);
+
+                    lock (Placed) if (!Placed.Contains(path)) Placed.Add(path);
+                }
+                catch (Exception ex) { Log("[占位] 创建失败 " + Path.GetFileName(path) + " : " + ex.Message); }
+            }
+
+            /// <summary>
+            /// 宫格移走之后，把不再需要的位置清掉。
+            /// 按文件名前缀 + 宫格名匹配，只删我们自己建的，绝不碰别人桌面的东西。
+            /// </summary>
+            public static void DropStale(string group, int keepCol, int keepRow, int cols, int rows)
+            {
+                try
+                {
+                    string dir = Dir;
+                    if (string.IsNullOrEmpty(dir)) return;
+
+                    string prefix = Prefix + group + "_";
+                    foreach (var p in Directory.GetFiles(dir, prefix + "*.tmp"))
+                    {
+                        string stem = Path.GetFileNameWithoutExtension(p);
+                        // 从右边解析出 _列_行
+                        string[] parts = stem.Split('_');
+                        if (parts.Length < 3) continue;
+                        if (!int.TryParse(parts[parts.Length - 2], out int c)) continue;
+                        if (!int.TryParse(parts[parts.Length - 1], out int r)) continue;
+
+                        bool inRange = c >= keepCol && c < keepCol + cols && r >= keepRow && r < keepRow + rows;
+                        if (inRange) continue;
+
+                        try
+                        {
+                            var fi = new FileInfo(p);
+                            fi.Attributes = FileAttributes.Normal;   // 隐藏+系统的文件直接删会失败
+                            fi.Delete();
+                            lock (Placed) Placed.Remove(p);
+                        }
+                        catch { }
+                    }
+                }
+                catch (Exception ex) { Log("[占位] 清理失败: " + ex.Message); }
+            }
+
+            /// <summary>程序退出时把本次放下的占位文件全部删掉，桌面恢复原样。</summary>
+            public static void RemoveAll()
+            {
+                int n = 0;
+                List<string> copy;
+                lock (Placed) { copy = new List<string>(Placed); Placed.Clear(); }
+                foreach (var p in copy)
+                {
+                    try
+                    {
+                        if (!File.Exists(p)) continue;
+                        var fi = new FileInfo(p);
+                        fi.Attributes = FileAttributes.Normal;   // 必须先去掉隐藏+系统
+                        fi.Delete();
+                        n++;
+                    }
+                    catch { }
+                }
+                if (n > 0) Log("[占位] 已清理 " + n + " 个占位文件");
+            }
+
+            /// <summary>
+            /// 兜底清理：进程上次没退干净（崩溃、被强杀）时会留下孤儿文件。
+            /// 启动时扫一遍，把本机上所有我们建的占位文件清掉再重新放。
+            /// 只认自己那个前缀，不会误删。
+            /// </summary>
+            public static int SweepOrphans()
+            {
+                int n = 0;
+                try
+                {
+                    string dir = Dir;
+                    if (string.IsNullOrEmpty(dir)) return 0;
+
+                    foreach (var p in Directory.GetFiles(dir, Prefix + "*.tmp"))
+                    {
+                        try
+                        {
+                            var fi = new FileInfo(p);
+                            fi.Attributes = FileAttributes.Normal;
+                            fi.Delete();
+                            n++;
+                        }
+                        catch { }
+                    }
+                }
+                catch { }
+                return n;
+            }
+
+            /// <summary>文件名里能用的字符。宫格名可能带中文、空格、符号。</summary>
+            static string SafeName(string s)
+            {
+                if (string.IsNullOrWhiteSpace(s)) return "grid";
+                var sb = new System.Text.StringBuilder();
+                foreach (char c in s.Trim())
+                {
+                    if (char.IsLetterOrDigit(c) || c == '-' || c == '_') sb.Append(c);
+                    else if (c == ' ') sb.Append('-');
+                    if (sb.Length >= 24) break;
+                }
+                return sb.Length == 0 ? "grid" : sb.ToString();
+            }
+        }
+
         public static void Launch(GroupItem it)
         {
             if (Environment.GetEnvironmentVariable("WINQUAD_SAFEMODE") == "1")
@@ -2053,6 +2550,11 @@ namespace WinQuad
                     f.BeginInvoke(new Action(() =>
                     {
                         f.ApplyGeometry();
+                        // 占位文件只在启动/应用配置时摆这一次。
+                        // 拖动时不跟着改 —— 用户要的就是"保存配置并重启时才变更位置"。
+                        // 下次启动会先 SweepOrphans 扫掉旧的再重摆，不会累积。
+                        Program.Placeholders.Sync(f);
+
                         var t = new Timer { Interval = 800 };
                         t.Tick += (a, b) => { t.Stop(); t.Dispose(); f.ApplyGeometry(); f.ReportCollisions(); };
                         t.Start();
@@ -2061,6 +2563,71 @@ namespace WinQuad
                 Forms.Add(f);
             }
             Log("窗口数=" + Forms.Count);
+            IconCache.LogStats();
+        }
+
+        /// <summary>
+        /// 图标缓存性能自测。不开窗口、不嵌入桌面，所以覆盖层正跑着的时候也能跑。
+        ///
+        /// 跑两轮：
+        ///   第 1 轮 —— 先清空缓存，测"全部重新提取 + 写缓存"
+        ///   第 2 轮 —— 缓存已就绪，测"全部读缓存"
+        /// 两轮差多少，就是缓存省下来的时间。
+        /// </summary>
+        static void BenchIcons()
+        {
+            try { File.Delete(LogPath); } catch { }
+
+            var cfg = LoadJson<AppConfig>(ConfigPath);
+            if (cfg == null) { Log("读不到 config.json"); return; }
+
+            var jobs = new List<GroupItem>();
+            foreach (var r in cfg.Groups)
+            {
+                if (string.IsNullOrWhiteSpace(r.GroupFile)) continue;
+                var grp = LoadJson<GroupFile>(Path.Combine(AppContext.BaseDirectory, r.GroupFile));
+                if (grp?.Items == null) continue;
+                foreach (var it in grp.Items)
+                    if (it != null && !string.IsNullOrWhiteSpace(it.Path))
+                        jobs.Add(it);
+            }
+
+            Log("=== 图标缓存自测 ===");
+            Log("待加载图标 " + jobs.Count + " 个，来自 " + cfg.Groups.Count + " 个宫格");
+
+            // ── 第 1 轮：清空后冷启动 ──
+            int cleared = Program.IconCache.Clear();
+            Log("已清空缓存 " + cleared + " 项");
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            int ok1 = RunJobs(jobs);
+            sw.Stop();
+            long cold = sw.ElapsedMilliseconds;
+            Log("第 1 轮（全部重新提取）: " + cold + " ms   成功 " + ok1 + "/" + jobs.Count);
+            Program.IconCache.LogStats();
+
+            // ── 第 2 轮：缓存就绪 ──
+            var sw2 = System.Diagnostics.Stopwatch.StartNew();
+            int ok2 = RunJobs(jobs);
+            sw2.Stop();
+            long warm = sw2.ElapsedMilliseconds;
+            Log("第 2 轮（全部读缓存）  : " + warm + " ms   成功 " + ok2 + "/" + jobs.Count);
+            Program.IconCache.LogStats();
+
+            Log("—— 节省 " + (cold - warm) + " ms"
+                + (cold > 0 ? "（" + (100 - warm * 100 / Math.Max(1, cold)) + "%）" : ""));
+            Log("=== 自测结束 ===");
+        }
+
+        /// <summary>把一批图标跑一遍，返回成功个数。用完即释放。</summary>
+        static int RunJobs(List<GroupItem> jobs)
+        {
+            int ok = 0;
+            foreach (var it in jobs)
+            {
+                var ic = Program.IconCache.Load(it.Icon, it.Path, out string _);
+                if (ic != null) { ok++; ic.Dispose(); }
+            }
+            return ok;
         }
 
         [STAThread]
@@ -2079,6 +2646,11 @@ namespace WinQuad
             // 探测器：实测桌面图标网格间距并写进 config.json。
             // 由管理器「刷新行列距」按钮调用；不常驻、不开窗口、立即退出。
             if (detect) { DetectGridStep(); return; }
+
+            // 图标缓存的性能自测：把配置里所有宫格的图标都加载一遍，报耗时，然后退出。
+            // **不开窗口、不嵌入桌面**，所以可以在覆盖层正跑着的时候安全地跑。
+            // 用法：WinQuad.exe --bench-icons
+            if (args.Length >= 1 && args[0] == "--bench-icons") { BenchIcons(); return; }
 
             // 管理器（WinQuad.Manager.exe）负责启动覆盖层并传 --overlay。
             // 没有参数直接双击时不做任何事，避免"点一下桌面上就冒出个东西"的困惑。
@@ -2224,6 +2796,16 @@ namespace WinQuad
                 LayoutMetrics.ApplyGridStep(cfg.Behaviour);
                 Log("总配置：" + ConfigPath + "  version=" + cfg.Version);
 
+                // 上次没退干净（崩溃、被任务管理器强杀）时桌面上会留下占位文件，
+                // 启动前先扫一遍清掉，后面每个宫格按当前配置重新放。
+                // 只认自己的前缀，不会误删别的东西。
+                if (cfg.Behaviour.Placeholders)
+                {
+                    int swept = Placeholders.SweepOrphans();
+                    if (swept > 0) Log("[占位] 清理了上次残留的 " + swept + " 个占位文件");
+                }
+                else Log("[占位] 配置里已关闭");
+
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
                 Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
@@ -2242,7 +2824,12 @@ namespace WinQuad
                 if (!f.Visible) f.Show();
             }
 
+            // 不管怎么退出（点菜单、任务管理器结束、正常关窗）都要把占位文件收走，
+            // 不能在用户桌面上留一堆隐藏文件。
+            AppDomain.CurrentDomain.ProcessExit += (s, e) => Placeholders.RemoveAll();
+
             Application.Run(Forms[0]);
+            Placeholders.RemoveAll();   // 正常退出时也走一遍（幂等）
         }
 
         static void SetupSelfTest(string[] args, AppConfig cfg)

@@ -1835,21 +1835,28 @@ namespace WinQuad.Manager
             // 这里必须防御 —— 否则空引用崩在启动阶段。
             if (_lblPosInfo == null || _cfg == null || _numCol == null || _numRow == null) return;
 
-            var wa = Screen.PrimaryScreen.WorkingArea;
+            // 多显示器下虚拟桌面比主屏大得多，容量要按虚拟桌面算
+            var vs = SystemInformation.VirtualScreen;
+            var org = DesktopSpace.Origin();
             var px = GridToPixels((int)_numCol.Value, (int)_numRow.Value);
-            int maxCol = Math.Max(0, (wa.Width - _cfg.Size.Width) / IconStepX);
-            int maxRow = Math.Max(0, (wa.Height - _cfg.Size.Height) / IconStepY);
+            int maxCol = Math.Max(0, (vs.Width - _cfg.Size.Width) / IconStepX);
+            int maxRow = Math.Max(0, (vs.Height - _cfg.Size.Height) / IconStepY);
+
+            string multi = Screen.AllScreens.Length > 1
+                ? "\r\n" + Screen.AllScreens.Length + " 块屏，虚拟桌面原点 (" + org.X + "," + org.Y + ")"
+                : "";
 
             _lblPosInfo.Text =
-                "列 " + _numCol.Value + " × " + IconStepX + " = 屏幕 x " + px.X
-                + " ；行 " + _numRow.Value + " × " + IconStepY + " = 屏幕 y " + px.Y + "\r\n"
-                + "当前屏幕可容纳 0~" + maxCol + " 列 / 0~" + maxRow + " 行";
+                "列 " + _numCol.Value + " × " + IconStepX + " + 原点 = 屏幕 x " + px.X
+                + " ；行 " + _numRow.Value + " × " + IconStepY + " + 原点 = 屏幕 y " + px.Y + "\r\n"
+                + "可容纳 0~" + maxCol + " 列 / 0~" + maxRow + " 行" + multi;
         }
 
         Point GridToPixels(int col, int row)
         {
-            var wa = Screen.PrimaryScreen.WorkingArea;
-            return new Point(col * IconStepX + wa.Left, row * IconStepY + wa.Top);
+            // 图标网格以虚拟桌面左上角为原点（多显示器下不是 (0,0)）
+            var o = DesktopSpace.Origin();
+            return new Point(col * IconStepX + o.X, row * IconStepY + o.Y);
         }
 
         #endregion

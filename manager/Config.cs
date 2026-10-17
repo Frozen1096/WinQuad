@@ -876,6 +876,51 @@ namespace WinQuad.Manager
 ";
     }
 
+    #region 桌面坐标空间
+
+    /// <summary>
+    /// 桌面坐标空间的换算。
+    ///
+    /// 桌面图标网格是从**虚拟桌面左上角**开始排的，多显示器下那个点不是 (0,0)：
+    /// 主屏左边接一台 2560 宽的屏，它就变成 (-2560, ...)。
+    /// 管理器算「列 × 83 = 屏幕 x」时必须以它当原点，否则多屏下算出来的位置是错的。
+    ///
+    /// 覆盖层里有一份同样的逻辑（两边是独立项目，没有共享程序集）。
+    /// </summary>
+    internal static class DesktopSpace
+    {
+        [StructLayout(LayoutKind.Sequential)]
+        struct POINT { public int X, Y; }
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        static extern IntPtr FindWindow(string cls, string win);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string cls, string win);
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern bool ClientToScreen(IntPtr h, ref POINT p);
+
+        /// <summary>虚拟桌面左上角（屏幕坐标）= 桌面图标网格的起点。</summary>
+        public static Point Origin()
+        {
+            try
+            {
+                IntPtr defView = FindWindowEx(FindWindow("Progman", null), IntPtr.Zero, "SHELLDLL_DefView", null);
+                IntPtr lv = defView == IntPtr.Zero ? IntPtr.Zero
+                           : FindWindowEx(defView, IntPtr.Zero, "SysListView32", null);
+                if (lv != IntPtr.Zero)
+                {
+                    var p = new POINT { X = 0, Y = 0 };
+                    if (ClientToScreen(lv, ref p)) return new Point(p.X, p.Y);
+                }
+            }
+            catch { }
+            var wa = Screen.PrimaryScreen.WorkingArea;
+            return new Point(wa.Left, wa.Top);
+        }
+    }
+
+    #endregion
+
     #region 图标提取（管理器只用于显示，不参与覆盖层渲染）
 
     internal static class Icons
