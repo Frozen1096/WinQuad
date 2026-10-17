@@ -1822,6 +1822,18 @@ namespace WinQuad.Manager
 
             // 位置只由手动拖动 + 这里的列/行决定，不再有"自动角落"
             g.Position.Anchor = null;
+
+            // ★ 只有用户真的动过格位控件，才重算 x/y。
+            //
+            // x/y 是**权威的屏幕坐标**（跟桌面图标一样锚在主屏上），col/row 只是派生值。
+            // 无条件按「col × 83 + 当前虚拟桌面原点」重算，换个显示器就会把宫格整体挪位
+            // —— 实测就是这么把位置搞坏的：
+            //     监控工具  1826,912 -> -734,719   （= 22×83 + (-2560)）
+            //     3dscan     83,798 ->   96,833    （= 32×83 + (-2560)）
+            //     模拟      166,912 ->  249,798    （旧布局原点 0 时算的）
+            // 用户没动格位时，磁盘上的 x/y 原样保留，一个数都不碰。
+            if (_positionTouched != Current) return;
+
             g.Position.Col = (int)_numCol.Value;
             g.Position.Row = (int)_numRow.Value;
             var px = GridToPixels((int)_numCol.Value, (int)_numRow.Value);
@@ -1837,7 +1849,7 @@ namespace WinQuad.Manager
 
             // 多显示器下虚拟桌面比主屏大得多，容量要按虚拟桌面算
             var vs = SystemInformation.VirtualScreen;
-            var org = DesktopSpace.Origin();
+            var org = new Point(Screen.PrimaryScreen.WorkingArea.Left, Screen.PrimaryScreen.WorkingArea.Top);
             var px = GridToPixels((int)_numCol.Value, (int)_numRow.Value);
             int maxCol = Math.Max(0, (vs.Width - _cfg.Size.Width) / IconStepX);
             int maxRow = Math.Max(0, (vs.Height - _cfg.Size.Height) / IconStepY);
@@ -1854,9 +1866,11 @@ namespace WinQuad.Manager
 
         Point GridToPixels(int col, int row)
         {
-            // 图标网格以虚拟桌面左上角为原点（多显示器下不是 (0,0)）
-            var o = DesktopSpace.Origin();
-            return new Point(col * IconStepX + o.X, row * IconStepY + o.Y);
+            // ★ 网格原点是**主屏工作区左上角**（单屏就是 (0,0)），不是虚拟桌面原点。
+            // 配置里的坐标全是 83/114 的整数倍，就是以这里为基准的。
+            // 用虚拟桌面原点（多显示器下可能是 -2560）去算，位置会整体偏掉。
+            var wa = Screen.PrimaryScreen.WorkingArea;
+            return new Point(col * IconStepX + wa.Left, row * IconStepY + wa.Top);
         }
 
         #endregion

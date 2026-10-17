@@ -761,16 +761,16 @@ namespace WinQuad
         }
 
         /// <summary>
-        /// 虚拟桌面左上角（**屏幕坐标**）。桌面图标网格的起点，也是宫格父窗口的客户区原点。
+        /// 虚拟桌面左上角（**屏幕坐标**）= 宫格父窗口（SHELLDLL_DefView / SysListView32）
+        /// 的客户区原点。
+        ///
+        /// 只用于一件事：屏幕坐标 ↔ 子窗口坐标的换算（SetWindowPos 收的是后者）。
+        /// **不要拿它当图标网格的起点** —— 图标是带相位的，见 IconGridOrigin()。
         ///
         /// 为什么必须动态取：多显示器下这个点不是 (0,0)。
-        /// 主屏左边接一台 2560 宽的屏，它就变成 (-2560, -193)。写死 (0,0) 的话，
-        /// 所有宫格都会整体偏到左边那台屏上去 —— 这正是之前的 bug。
-        ///
-        /// 取的是 SysListView32 的客户区原点：它和 SHELLDLL_DefView 一样覆盖整个虚拟桌面，
-        /// 两者原点相同。拿不到就退回主屏工作区左上角（单屏时就是 (0,0)，行为不变）。
+        /// 主屏左边接一台 2560 宽的屏，它就变成 (-2560, -193)。
         /// </summary>
-        public static Point DesktopOrigin()
+        public static Point ParentOrigin()
         {
             try
             {
@@ -789,8 +789,91 @@ namespace WinQuad
             return new Point(wa.Left, wa.Top);
         }
 
+        /// <summary>兼容旧名。**注意：返回的是图标网格起点（含相位），不是父窗口客户区原点。**
+        /// 网格换算（SnapToIconGrid / GridToPixels / PixelsToGrid）走这个；
+        /// 屏幕↔子窗口换算走 ParentOrigin()。</summary>
+        public static Point DesktopOrigin()
+        {
+            // ★ 网格数学的原点是**主屏工作区左上角**（单屏时就是 (0,0)），
+            // 不是虚拟桌面原点。配置里的坐标全是 83/114 的整数倍，
+            // 就是以这里为基准的。
+            // 用虚拟桌面原点（多显示器下可能是 -2560）去吸附，每吸一次会平移 13 像素，
+            // 而且会被保存下来 —— 表现就是"调整位置后偏移且无法恢复"。
+            var wa = Screen.PrimaryScreen.WorkingArea;
+            return new Point(wa.Left, wa.Top);
+        }
+
+        static Point _gridOrigin;
+        static bool _gridOriginKnown;
+
+        /// <summary>
+        /// 桌面图标网格的**真正起点**（屏幕坐标）= 父窗口客户区原点 + 网格相位。
+        ///
+        /// 为什么不能直接用客户区原点：图标不是从原点开始排的，而是带一个相位。
+        /// 本机实测（66 个图标全部吻合）：
+        ///     屏幕 x = 17, 100, 183, 266 …   → x 相位 17
+        ///     屏幕 y =  2, 116, 230 …        → y 相位  2
+        /// 而客户区原点是 (-2560, -193)。直接用原点算出来的格位会整体偏 17 像素，
+        /// 宫格就不落在图标格上 —— 这就是「错位」。
+        ///
+        /// 相位用「任一图标坐标 mod 格距」求得，取众数最稳。没有图标时退回 0。
+        /// 结果缓存，启动时算一次即可。
+        /// </summary>
+        public static Point IconGridOrigin()
+        {
+            if (_gridOriginKnown) return _gridOrigin;
+
+            Point o = ParentOrigin();
+            try
+            {
+                var icons = GridForm.ReadDesktopIcons();
+                if (icons != null && icons.Count > 0)
+                {
+                    // 直接量图标矩形的左边缘对格距取模，得到网格相位。
+                    // ★ 必须减去 offX：ReadDesktopIcons 返回的是**碰撞盒**矩形，
+                    //   它比真实格位内缩了 offX（本机 19px）。
+                    //   不减的话相位会算成 36，而真实格位相位是 17。
+                    // 本机实测格位：x = 17, 100, 183…  y = 2, 116, 230…  → 相位 (17, 2)
+                    int offX = (IconStepX - CollisionW) / 2;
+                    var cx = new Dictionary<int, int>();
+                    var cy = new Dictionary<int, int>();
+                    foreach (var kv in icons)
+                    {
+                        int x = ((kv.Value.X - offX) % IconStepX + IconStepX) % IconStepX;
+                        int y = (kv.Value.Y % IconStepY + IconStepY) % IconStepY;
+                        cx[x] = cx.TryGetValue(x, out int a) ? a + 1 : 1;
+                        cy[y] = cy.TryGetValue(y, out int b) ? b + 1 : 1;
+                    }
+                    int phaseX = 0, phaseY = 0, bestX = 0, bestY = 0;
+                    foreach (var kv in cx) if (kv.Value > bestX) { bestX = kv.Value; phaseX = kv.Key; }
+                    foreach (var kv in cy) if (kv.Value > bestY) { bestY = kv.Value; phaseY = kv.Key; }
+
+                    // ★ 起点必须**本身满足** "origin ≡ 相位 (mod 格距)"，不能简单地在
+                    // 客户区原点上加相位 —— 因为客户区原点自己对格距就有余数
+                    // （本机 -2560 ≡ 13，加 17 得到 30，不是 17）。
+                    // 做法：从相位出发，往左退整格，退到不迟于客户区原点的位置。
+                    int ox = phaseX;
+                    while (ox > o.X) ox -= IconStepX;
+                    int oy = phaseY;
+                    while (oy > o.Y) oy -= IconStepY;
+
+                    _gridOrigin = new Point(ox, oy);
+                    _gridOriginKnown = true;
+                    Program.Log("[网格] 客户区原点 " + o + "，相位 (" + phaseX + "," + phaseY
+                                + ")，图标网格起点 " + _gridOrigin
+                                + "（起点取模 = (" + (((ox % IconStepX) + IconStepX) % IconStepX)
+                                + "," + (((oy % IconStepY) + IconStepY) % IconStepY) + ")）");
+                    return _gridOrigin;
+                }
+            }
+            catch { }
+            _gridOrigin = o;
+            _gridOriginKnown = true;
+            return _gridOrigin;
+        }
+
         /// <summary>屏幕坐标 → 宫格子窗口坐标（SetWindowPos 用的是这个）。</summary>
-        public static Point ToChild(Point screen) { var o = DesktopOrigin(); return new Point(screen.X - o.X, screen.Y - o.Y); }
+        public static Point ToChild(Point screen) { var o = ParentOrigin(); return new Point(screen.X - o.X, screen.Y - o.Y); }
 
         /// <summary>当前屏幕能容纳的列数 / 行数（给定网格尺寸）。默认按虚拟桌面算 ——
         /// 图标网格是从虚拟桌面原点开始排的，用主屏工作区会少算。</summary>
@@ -1139,18 +1222,64 @@ namespace WinQuad
         ///
         /// 老配置里只有 col/row 没有 x/y 的，才会用格位反算出像素 —— 兼容即可。
         /// </summary>
+        /// <summary>启动定位时是否吸附到图标网格。由 BuildWindows 按配置注入。</summary>
+        public static bool ResolveSnap = true;
+
+        /// <summary>启动定位时是否避让桌面图标。默认关闭 —— 配了坐标就精确落在配的位置上。</summary>
+        public static bool ResolveAvoid = true;
+
         public static void ResolvePosition(GroupFile g, LayoutMetrics m, int maxNudge)
         {
             var p = g.Position ?? (g.Position = new PositionSection());
+            _avoidOtherGrids = true;   // 摆放阶段要避开已经摆好的其他宫格
 
             // 屏幕坐标优先（新格式）
             if (p.X != PositionSection.Unset && p.Y != PositionSection.Unset)
             {
                 ClampToWorkArea(p, m);
+
+                // ★ 对齐到桌面图标网格。
+                //
+                // 配置里存的是"第几列 × 83"这种整数倍（0, 83, 166…），但真实图标格位
+                // 是从网格起点 + 相位排的（本机实测相位 17,2 → 格位在 17, 100, 183…）。
+                // 不吸附的话宫格整体偏 17 像素，看着就是"错位"。
+                // 吸附只改内存里的位置，不写回配置；下次启动会重新吸到同一处，结果稳定。
+                if (ResolveSnap)
+                {
+                    var snapped = LayoutMetrics.SnapToIconGrid(p.X, p.Y);
+                    if (snapped.X != p.X || snapped.Y != p.Y)
+                        Program.Log("[位置] 吸附到图标网格 (" + p.X + "," + p.Y + ") -> ("
+                                    + snapped.X + "," + snapped.Y + ")");
+                    p.X = snapped.X; p.Y = snapped.Y;
+                }
+
+                ClampToWorkArea(p, m);
                 SyncGridFromPixels(p);
                 Program.Log("[位置] 用屏幕坐标 (" + p.X + "," + p.Y + ")"
                             + "  派生格位 col=" + p.Col + " row=" + p.Row
                             + "  虚拟桌面原点 " + LayoutMetrics.DesktopOrigin());
+
+                // 落点上要是压着真实图标，仍然要在允许范围内微调 ——
+                // 换主屏、桌面图标重排之后，原来的位置可能正好盖住别人的图标。
+                List<KeyValuePair<string, Rectangle>> occupied = null;
+                try { occupied = ReadDesktopIcons(); }
+                catch (Exception ex) { Program.Log("读取桌面图标失败: " + ex.Message); }
+
+                if (ResolveAvoid && occupied != null && occupied.Count > 0 && Clashes(p.X, p.Y, m, occupied))
+                {
+                    int slotLimit = maxNudge <= 0 ? 0 : Math.Max(1, maxNudge / LayoutMetrics.IconStepX);
+                    var free = FindFreeNear(p.X, p.Y, m, occupied, slotLimit);
+                    if (free.HasValue)
+                    {
+                        Program.Log("[位置] 落点压住图标，在 " + slotLimit + " 格内挪到 ("
+                                    + free.Value.X + "," + free.Value.Y + ")");
+                        p.X = free.Value.X; p.Y = free.Value.Y;
+                        SyncGridFromPixels(p);
+                    }
+                    else Program.Log("[位置] 落点压住图标，且 " + slotLimit + " 格内无空位 —— 保持不动，仅警告");
+                }
+
+                RememberBox(p, m);
                 return;
             }
 
@@ -1196,6 +1325,8 @@ namespace WinQuad
 
             p.X = px.X; p.Y = px.Y;
             p.Col = col; p.Row = row;
+
+            RememberBox(p, m);
         }
 
         /// <summary>
@@ -1212,6 +1343,9 @@ namespace WinQuad
             var here = LayoutMetrics.PixelsToGrid(x, y);
             var cap = LayoutMetrics.GridCapacity(m);
             if (maxNudgeSlots <= 0) maxNudgeSlots = 0;
+
+            // 微调只允许留在原来那块屏里，不能跨到别的显示器上
+            var scr = Screen.FromPoint(new Point(x, y)) ?? Screen.PrimaryScreen;
 
             var cands = new List<(int onEdge, int cost, int col, int row)>();
 
@@ -1248,6 +1382,12 @@ namespace WinQuad
             foreach (var c in cands)
             {
                 var px = LayoutMetrics.GridToPixels(c.col, c.row);
+
+                // ★ 只留在**原来那块屏**里。
+                // 网格列号是相对虚拟桌面原点数的，多显示器下负坐标就是左边那台屏。
+                // 不加这道限制的话，最近的空位可能落在别的显示器上 ——
+                // 实测就有一个宫格被从主屏 (0,456) 挪到了左屏 (-70,491)。
+                if (!scr.Bounds.Contains(new Rectangle(px.X, px.Y, m.W, m.H))) continue;
                 if (!Clashes(px.X, px.Y, m, icons)) return px;
             }
             return null;
@@ -1262,9 +1402,36 @@ namespace WinQuad
         static bool Clashes(int x, int y, LayoutMetrics m, List<KeyValuePair<string, Rectangle>> icons)
         {
             var box = new Rectangle(x - m.Bleed, y - m.Bleed, m.W + m.Bleed * 2, m.H + m.Bleed * 2);
+
+            // 启动摆放时也要避开**已经摆好的其他宫格**。
+            // 否则避让会把两个宫格算到同一个空位上，叠成一坨 ——
+            // 实测 chat1 被挪到 (13,605)，正好压在 program 的 (0,684) 上。
+            if (_avoidOtherGrids)
+                foreach (var r in GridBoxes)
+                    if (r.IntersectsWith(box)) return true;
+
             foreach (var kv in icons)
                 if (kv.Value.IntersectsWith(box)) return true;
             return false;
+        }
+
+        /// <summary>已经摆好的宫格矩形（屏幕坐标）。启动时逐个累加，供避让判断用。</summary>
+        public static readonly List<Rectangle> GridBoxes = new List<Rectangle>();
+
+        /// <summary>只在启动摆放阶段为 true；拖动时不检查其他宫格。</summary>
+        static bool _avoidOtherGrids;
+
+        /// <summary>全部宫格摆完之后调用，关掉「避开其他宫格」的检查。</summary>
+        public static void EndPlacement() { _avoidOtherGrids = false; }
+
+        /// <summary>记下这个宫格占的矩形，后面的宫格摆放时要避开它。</summary>
+        static void RememberBox(PositionSection p, LayoutMetrics m)
+        {
+            // 注意：这里**不能**把 _avoidOtherGrids 关掉。
+            // 关掉的话只有第一个宫格会检查重叠，后面的全部失效 ——
+            // 实测就出现过两个宫格被摆到同一位置。
+            // 整个摆放阶段结束后由 BuildWindows 统一关闭。
+            GridBoxes.Add(new Rectangle(p.X - m.Bleed, p.Y - m.Bleed, m.W + m.Bleed * 2, m.H + m.Bleed * 2));
         }
 
         /// <summary>
@@ -2562,6 +2729,7 @@ namespace WinQuad
                 };
                 Forms.Add(f);
             }
+            GridForm.EndPlacement();   // 摆放阶段结束，拖动时不再检查其他宫格
             Log("窗口数=" + Forms.Count);
             IconCache.LogStats();
         }
