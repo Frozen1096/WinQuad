@@ -1134,7 +1134,8 @@ namespace WinQuad
                         // 它们就是设计来被宫格盖住的（让系统别往这儿放新图标），
                         // 不排除的话每个宫格都会报"压住了桌面图标"，
                         // 而且拖动后落点判定会把宫格从自己的位置上挤走。
-                        if (name.StartsWith(".WinQuad占位_", StringComparison.OrdinalIgnoreCase)) continue;
+                        // 占位文件名是"若干零宽字符 + .ico"，所以按这个特征认。
+                        if (Program.Placeholders.IsOurs(name)) continue;
 
                         // 碰撞盒：图标在格位里水平居中、内容从格位顶部开始。
                         // 不是整个 78×113 格位 —— 那样会把"图标盒下方的空白"也算成占用，
@@ -2383,24 +2384,38 @@ namespace WinQuad
         /// 系统会把图标放进宫格覆盖的格位里，宫格就被盖住了。
         ///
         /// 【怎么解决】
-        /// 在宫格实际占的每个图标格位上，放一个**真实存在的隐藏空文件**。
+        /// 在宫格实际占的每个图标格位上，放一个**真实存在的文件**。
         /// 系统认它，就认为那个格位被占了，不会再往那儿放东西。
+        /// 这是"真的占用"而不是"骗系统"——不依赖注入，也不依赖未公开接口。
         ///
-        /// 这是"真的占用"而不是"骗系统"——所以不依赖任何注入或未公开接口。
+        /// 【★ 属性只能用 Hidden，绝不能加 System】
+        /// 实测出来的硬限制：
         ///
-        /// 【★ 只能设 Hidden，绝不能加 System】
-        /// 这是实测出来的硬限制，两种属性行为完全不同：
+        ///   只 Hidden        图标数 +1，拿到位置，新文件被挤到下一格     ✅ 占位有效
+        ///   Hidden + System  图标数不变，视图里根本没有它，不占位        ❌
         ///
-        ///   只 Hidden        图标数 +1，拿到位置 (2577,309)，新文件被挤到 (2577,651)  ✅ 占位有效
-        ///   Hidden + System  图标数不变，列表里根本没有它，新文件照样落在原处      ❌ 完全不占位
+        /// 试过「先 Hidden 建出来拿到格位、再补 System」的两步法：
+        /// 刚补完那一刻位置还在、也确实挡住新文件，但过一会儿 Explorer
+        /// 会把整个项从视图里踢掉（实测图标数 81 → 67，14 个占位全消失），
+        /// 格位又变回空闲。所以**不可见和持续占位靠文件属性是兼不得的**。
         ///
-        /// 原因：Explorer 不给带 System 属性的项分配图标位置。
-        /// 之前那版设了 Hidden|System，所以一次都没成功过。
+        /// 【所以改成「看起来不存在」】
+        /// 既然藏不住，就把它的外观做没：
+        ///
+        ///   文件名 = 若干零宽字符（U+200B）    标签渲染出来是空白
+        ///   扩展名 = .png                      ★ 关键：这样 Explorer 会把
+        ///                                     文件**内容**当图标画出来
+        ///   内容   = 一张 64×64 全透明的 PNG   于是图标本身也是空白
+        ///   属性   = Hidden                   默认设置下压根不显示
+        ///
+        /// 用 .png 而不是 .lnk 是因为快捷方式会被叠上那个小箭头；普通文件又会
+        /// 按扩展名显示系统默认图标（一个白色纸片）。只有 .ico 能让文件内容
+        /// 直接决定图标，从而做到真透明。
         ///
         /// 【什么时候摆】
         /// 只在启动、以及「保存配置并重启」应用配置时摆一次。
         /// 拖动时不跟着改 —— 拖完那个位置上的占位要等下次重启才更新，
-        /// 但反正占位是隐藏的，而且下次启动会先扫掉旧的再重摆，不会累积。
+        /// 下次启动会先扫掉旧的再重摆，不会累积。
         ///
         /// 【前提】
         /// 桌面必须关闭「自动排列图标」。开着的话占位文件自己会被系统排走，
@@ -2410,17 +2425,18 @@ namespace WinQuad
         /// 优先公共桌面；写不进去就退回用户桌面。
         /// 实测公共桌面的 ACL 对普通用户只有 ReadAndExecute，而程序必须 asInvoker，
         /// 所以绝大多数机器上会走用户桌面那条。
-        ///
-        /// 【长什么样】
-        ///   .WinQuad占位_&lt;宫格名&gt;_&lt;列&gt;_&lt;行&gt;.tmp     0 字节，Hidden
-        ///   默认的资源管理器设置看不见；只有勾了「显示隐藏的项目」才会露出来。
-        ///
-        /// 【名字里为什么带列行】
-        /// 这样重建时不用先读旧文件就能算出去重目标；同一格位重复调用是幂等的。
         /// </summary>
         internal static class Placeholders
         {
-            const string Prefix = ".WinQuad占位_";
+            const string Ext = ".png";
+
+            /// <summary>零宽空格。文件名只用它，标签就渲染成空白。</summary>
+            const char Zw = '\u200B';
+
+            /// <summary>本轮已经摆过的 "宫格|列|行"，重复调用直接跳过。</summary>
+            static readonly HashSet<string> Done = new HashSet<string>();
+
+            static int _seq;
 
             static string _dir;
 
@@ -2449,7 +2465,7 @@ namespace WinQuad
                         if (string.IsNullOrEmpty(c) || !Directory.Exists(c)) continue;
                         try
                         {
-                            string probe = Path.Combine(c, Prefix + "write-probe.tmp");
+                            string probe = Path.Combine(c, Ext.TrimStart('.'));
                             using (File.Create(probe)) { }
                             File.SetAttributes(probe, FileAttributes.Normal);
                             File.Delete(probe);
@@ -2484,39 +2500,102 @@ namespace WinQuad
                     int cols = Math.Max(1, (int)Math.Ceiling((double)m.Footprint.Width / Math.Max(1, LayoutMetrics.IconStepX)));
                     int rows = Math.Max(1, (int)Math.Ceiling((double)m.Footprint.Height / Math.Max(1, LayoutMetrics.IconStepY)));
 
-                    string name = SafeName(f.GroupName);
+                    string group = f.GroupName ?? "grid";
                     for (int dc = 0; dc < cols; dc++)
                         for (int dr = 0; dr < rows; dr++)
-                            Ensure(name, pos.Col + dc, pos.Row + dr);
+                            Ensure(group, pos.Col + dc, pos.Row + dr);
                 }
                 catch (Exception ex) { Log("[占位] 同步失败: " + ex.Message); }
             }
 
-            /// <summary>确保某个格位上有一个占位文件。</summary>
+            /// <summary>确保某个格位上有一个占位文件夹。</summary>
             static void Ensure(string group, int col, int row)
             {
+                string key = group + "|" + col + "|" + row;
+                lock (Done) { if (!Done.Add(key)) return; }
+
                 string dir = Dir;
                 if (string.IsNullOrEmpty(dir)) return;
 
-                string path = Path.Combine(dir, Prefix + group + "_" + col + "_" + row + ".tmp");
+                // 文件夹名 = 若干个零宽字符。文件夹**没有扩展名**，
+                // 标签渲染出来就是完全空白 —— 这是它比 .png 文件好的地方
+                // （文件总会露出 ".png" 那几个字符）。
+                int n = System.Threading.Interlocked.Increment(ref _seq);
+                var sb = new System.Text.StringBuilder(n);
+                for (int k = 0; k < n; k++) sb.Append(Zw);
+                string path = Path.Combine(dir, sb.ToString());
+
                 try
                 {
-                    if (File.Exists(path)) return;               // 已经在了
-                    File.WriteAllBytes(path, Array.Empty<byte>());  // 0 字节
+                    File.WriteAllBytes(path, TransparentPng());
 
-                    // ★ 只设 Hidden，**绝不能加 System**。
-                    // 实测：带 System 的隐藏项 Explorer 不给分配图标位置（列表里根本没有它），
-                    // 于是完全不占位；只带 Hidden 的会正常占位且默认看不见。
+                    // 只设 Hidden。★ 不能加 System —— 加了 Explorer 就不给它分配图标位。
                     File.SetAttributes(path, FileAttributes.Hidden);
-
                     lock (Placed) if (!Placed.Contains(path)) Placed.Add(path);
                 }
-                catch (Exception ex) { Log("[占位] 创建失败 " + Path.GetFileName(path) + " : " + ex.Message); }
+                catch (Exception ex) { Log("[占位] 创建失败: " + ex.Message); }
+            }
+
+            static byte[] _png;
+
+            /// <summary>
+            /// 生成一张 64×64、全透明（alpha = 0）的 PNG。
+            ///
+            /// 为什么用 .png 而不是 .ico：
+            ///   .ico 走的是图标的"AND 掩码 + 位图"老路子，Explorer 画出来是
+            ///   一块深灰色方块（实测，换了几种掩码组合都一样）。
+            ///   .png 走的是**缩略图**渲染，alpha 通道被真正使用，
+            ///   全透明就是真的什么都不画。
+            ///
+            /// 为什么不用 .lnk：会被叠上快捷方式小箭头。
+            /// 为什么不用无扩展名：那样 Explorer 会显示系统默认的白色纸片图标。
+            /// </summary>
+            static byte[] TransparentPng()
+            {
+                if (_png != null) return _png;
+
+                const int S = 64;
+                using (var bmp = new Bitmap(S, S, System.Drawing.Imaging.PixelFormat.Format32bppArgb))
+                {
+                    using (var g = Graphics.FromImage(bmp)) g.Clear(Color.Transparent);
+
+                    // ★ 关键：正中央点一个像素。
+                    //
+                    // 为什么不干脆整张全透明：实测 shell（IShellItemImageFactory::GetImage）
+                    // 对全透明图片返回的缩略图确实是全透明的，但资源管理器的**桌面视图**
+                    // 会把"空缩略图"当成"没有预览"，画一个灰色占位方块 —— 就是看到的那个灰块。
+                    // 所以留一个像素的有色内容，让缩略图非空；整图 64×64，
+                    // 缩放到 48 像素后这一个点约 0.75 像素，肉眼基本看不出来。
+                    //
+                    // 颜色取中性中灰：浅色和深色壁纸上都不显眼。
+                    bmp.SetPixel(S / 2, S / 2, Color.FromArgb(255, 128, 128, 128));
+
+                    using (var ms = new MemoryStream())
+                    {
+                        bmp.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+                        _png = ms.ToArray();
+                    }
+                }
+                return _png;
+            }
+
+            /// <summary>文件名是不是"我们那种"：全是零宽字符 + .png。</summary>
+            public static bool IsOurs(string nameOrPath)
+            {
+                string n = Path.GetFileName(nameOrPath);
+                if (!n.EndsWith(Ext, StringComparison.OrdinalIgnoreCase)) return false;
+                string stem = n.Substring(0, n.Length - Ext.Length);
+                if (stem.Length == 0) return false;
+                foreach (char c in stem) if (c != Zw) return false;
+                return true;
             }
 
             /// <summary>
             /// 宫格移走之后，把不再需要的位置清掉。
-            /// 按文件名前缀 + 宫格名匹配，只删我们自己建的，绝不碰别人桌面的东西。
+            /// 只删我们自己建的那种文件（全零宽字符名 + .png），绝不碰别人桌面的东西。
+            ///
+            /// 注意：现在占位只在启动时摆一次，所以这个函数平时用不到；
+            /// 留着是为了以后想改成"拖动后也同步"时有现成的工具。
             /// </summary>
             public static void DropStale(string group, int keepCol, int keepRow, int cols, int rows)
             {
@@ -2525,23 +2604,13 @@ namespace WinQuad
                     string dir = Dir;
                     if (string.IsNullOrEmpty(dir)) return;
 
-                    string prefix = Prefix + group + "_";
-                    foreach (var p in Directory.GetFiles(dir, prefix + "*.tmp"))
+                    foreach (var p in Directory.GetFiles(dir, "*" + Ext))
                     {
-                        string stem = Path.GetFileNameWithoutExtension(p);
-                        // 从右边解析出 _列_行
-                        string[] parts = stem.Split('_');
-                        if (parts.Length < 3) continue;
-                        if (!int.TryParse(parts[parts.Length - 2], out int c)) continue;
-                        if (!int.TryParse(parts[parts.Length - 1], out int r)) continue;
-
-                        bool inRange = c >= keepCol && c < keepCol + cols && r >= keepRow && r < keepRow + rows;
-                        if (inRange) continue;
-
+                        if (!IsOurs(p)) continue;
                         try
                         {
                             var fi = new FileInfo(p);
-                            fi.Attributes = FileAttributes.Normal;   // 隐藏+系统的文件直接删会失败
+                            fi.Attributes = FileAttributes.Normal;   // 隐藏文件直接删会失败
                             fi.Delete();
                             lock (Placed) Placed.Remove(p);
                         }
@@ -2575,7 +2644,7 @@ namespace WinQuad
             /// <summary>
             /// 兜底清理：进程上次没退干净（崩溃、被强杀）时会留下孤儿文件。
             /// 启动时扫一遍，把本机上所有我们建的占位文件清掉再重新放。
-            /// 只认自己那个前缀，不会误删。
+            /// 只认"全零宽字符名 + .png"这一种，不会误删。
             /// </summary>
             public static int SweepOrphans()
             {
@@ -2585,8 +2654,9 @@ namespace WinQuad
                     string dir = Dir;
                     if (string.IsNullOrEmpty(dir)) return 0;
 
-                    foreach (var p in Directory.GetFiles(dir, Prefix + "*.tmp"))
+                    foreach (var p in Directory.GetFiles(dir, "*" + Ext))
                     {
+                        if (!IsOurs(p)) continue;
                         try
                         {
                             var fi = new FileInfo(p);
@@ -2599,20 +2669,6 @@ namespace WinQuad
                 }
                 catch { }
                 return n;
-            }
-
-            /// <summary>文件名里能用的字符。宫格名可能带中文、空格、符号。</summary>
-            static string SafeName(string s)
-            {
-                if (string.IsNullOrWhiteSpace(s)) return "grid";
-                var sb = new System.Text.StringBuilder();
-                foreach (char c in s.Trim())
-                {
-                    if (char.IsLetterOrDigit(c) || c == '-' || c == '_') sb.Append(c);
-                    else if (c == ' ') sb.Append('-');
-                    if (sb.Length >= 24) break;
-                }
-                return sb.Length == 0 ? "grid" : sb.ToString();
             }
         }
 
@@ -2717,10 +2773,10 @@ namespace WinQuad
                     f.BeginInvoke(new Action(() =>
                     {
                         f.ApplyGeometry();
-                        // 占位文件只在启动/应用配置时摆这一次。
-                        // 拖动时不跟着改 —— 用户要的就是"保存配置并重启时才变更位置"。
-                        // 下次启动会先 SweepOrphans 扫掉旧的再重摆，不会累积。
-                        Program.Placeholders.Sync(f);
+                        // 占位文件只在启动/应用配置时摆这一次（开关在 config 的
+                        // behaviour.placeholders）。拖动时不跟着改 —— 用户要的就是
+                        // "保存配置并重启时才变更位置"。
+                        if (cfg.Behaviour.Placeholders) Program.Placeholders.Sync(f);
 
                         var t = new Timer { Interval = 800 };
                         t.Tick += (a, b) => { t.Stop(); t.Dispose(); f.ApplyGeometry(); f.ReportCollisions(); };
